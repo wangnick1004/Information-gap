@@ -1,0 +1,15 @@
+[build]
+  functions = "functions"
+
+[functions]
+  # Netlify will bundle dependencies defined in requirements.txt
+
+[[redirects]]
+  from = "/api/*"
+  to = "/.netlify/functions/main/:splat"
+  status = 200
+
+[[redirects]]
+  from = "/*"
+  to = "/.netlify/functions/main"
+  status = 200
