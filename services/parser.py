@@ -15,6 +15,8 @@ from config import settings
 
 logger = logging.getLogger("line_bot.parser")
 
+DEFAULT_FALLBACK_MODEL = "gemini-flash-latest"
+
 
 class ParsedItem(BaseModel):
     """Structured entity extraction schema for physical retail goods trading posts."""
@@ -73,6 +75,28 @@ class GeminiRateLimitError(GeminiAPIError):
     pass
 
 
+def resolve_model_name(raw_model: Optional[str] = None) -> str:
+    """
+    Normalize model string and substitute deprecated/missing models with active aliases.
+    Strips 'models/' prefix if present and maps legacy names (e.g., gemini-1.5-flash) to gemini-flash-latest.
+    """
+    if not raw_model or not raw_model.strip():
+        return DEFAULT_FALLBACK_MODEL
+
+    clean = raw_model.replace("models/", "").strip()
+    deprecated_models = {
+        "gemini-1.5-flash",
+        "gemini-1.5-flash-latest",
+        "gemini-1.5-pro",
+        "gemini-1.5-pro-latest",
+        "gemini-pro",
+        "gemini-1.0-pro",
+    }
+    if clean.lower() in deprecated_models:
+        return DEFAULT_FALLBACK_MODEL
+    return clean
+
+
 SYSTEM_INSTRUCTION = """
 You are an expert in Japanese cross-border commerce, secondhand market valuation (Yahoo! Auctions, Mercari, Rakuten, Buyee), and secondary market trading identification from text and product images.
 Your mission is to analyze trading posts or product photos for ANY physical retail goods (e.g., consumer electronics, audio gear, cameras, badminton/sports equipment, sneakers, trading cards, anime merchandise, collectibles, watches, etc.) and extract structured product details translated into clean, search-effective Japanese keywords.
@@ -119,7 +143,7 @@ async def parse_fb_post(
 ) -> ParsedItem:
     """
     Parse a physical goods trading post or image using Gemini multimodal structured output,
-    with automatic retry on 429 RESOURCE_EXHAUSTED rate limits.
+    with automatic retry on 429 rate limits and automatic fallback on 404 NOT_FOUND model errors.
 
     Args:
         post_text: Optional text or caption from user/post.
@@ -184,7 +208,7 @@ async def parse_fb_post(
         system_instruction=SYSTEM_INSTRUCTION,
         temperature=0.1,
     )
-    model_name = os.getenv("GEMINI_MODEL", "gemini-1.5-pro")
+    model_name = resolve_model_name(os.getenv("GEMINI_MODEL", DEFAULT_FALLBACK_MODEL))
 
     for attempt in range(1, max_retries + 1):
         try:
@@ -209,7 +233,7 @@ async def parse_fb_post(
                 )
 
             logger.info(
-                f"Successfully parsed input. Brand/Franchise: '{parsed_result.franchise}', "
+                f"Successfully parsed input with model '{model_name}'. Brand/Franchise: '{parsed_result.franchise}', "
                 f"Model/Character: '{parsed_result.character}', Query: '{parsed_result.search_query_ja}', "
                 f"Price: {parsed_result.fb_price_twd} TWD"
             )
@@ -218,6 +242,17 @@ async def parse_fb_post(
         except IrrelevantPostError:
             raise
         except APIError as exc:
+            # Handle 404 NOT_FOUND by falling back to stable DEFAULT_FALLBACK_MODEL
+            is_404 = getattr(exc, "code", None) == 404 or "404" in str(exc) or "not found" in str(exc).lower()
+            if is_404 and model_name != DEFAULT_FALLBACK_MODEL:
+                logger.warning(
+                    f"Configured model '{model_name}' returned 404 NOT_FOUND. Automatically switching to '{DEFAULT_FALLBACK_MODEL}'..."
+                )
+                print(f"🔄 [Gemini Model Fallback] Switching from '{model_name}' to '{DEFAULT_FALLBACK_MODEL}'...")
+                model_name = DEFAULT_FALLBACK_MODEL
+                continue
+
+            # Handle 429 RESOURCE_EXHAUSTED with automatic retries
             is_rate_limit = (
                 getattr(exc, "code", None) == 429
                 or "429" in str(exc)
@@ -242,6 +277,9 @@ async def parse_fb_post(
             logger.error(f"Failed to decode JSON from Gemini output: {exc}", exc_info=True)
             raise GeminiAPIError("Failed to parse Gemini response as JSON.") from exc
         except Exception as exc:
+            if "404" in str(exc) and model_name != DEFAULT_FALLBACK_MODEL:
+                model_name = DEFAULT_FALLBACK_MODEL
+                continue
             if "429" in str(exc) or "RESOURCE_EXHAUSTED" in str(exc):
                 if attempt < max_retries:
                     wait_time = retry_delay_seconds * attempt

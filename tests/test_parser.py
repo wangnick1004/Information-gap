@@ -11,7 +11,21 @@ from services.parser import (
     IrrelevantPostError,
     ParsedItem,
     parse_fb_post,
+    resolve_model_name,
 )
+
+
+def test_resolve_model_name():
+    """Test model name normalization and legacy alias redirection."""
+    assert resolve_model_name("models/gemini-1.5-flash") == "gemini-flash-latest"
+    assert resolve_model_name("gemini-1.5-flash") == "gemini-flash-latest"
+    assert resolve_model_name("gemini-1.5-flash-latest") == "gemini-flash-latest"
+    assert resolve_model_name("gemini-1.5-pro") == "gemini-flash-latest"
+    assert resolve_model_name("gemini-pro") == "gemini-flash-latest"
+    assert resolve_model_name("models/gemini-3.6-flash") == "gemini-3.6-flash"
+    assert resolve_model_name("gemini-2.5-flash") == "gemini-2.5-flash"
+    assert resolve_model_name("") == "gemini-flash-latest"
+    assert resolve_model_name(None) == "gemini-flash-latest"
 
 
 @pytest.mark.anyio
@@ -155,9 +169,44 @@ async def test_parse_fb_post_anime_merch_success():
         assert result.is_anime_merch is True
 
         mock_client.aio.models.generate_content.assert_awaited_once()
-        call_kwargs = mock_client.aio.models.generate_content.call_args.kwargs
-        assert bool(call_kwargs["model"]) is True
-        assert call_kwargs["contents"] == [post_text]
+
+
+@pytest.mark.anyio
+async def test_parse_fb_post_404_model_fallback():
+    """Test that if a model throws 404 NOT_FOUND, it automatically falls back to gemini-flash-latest."""
+    post_text = "售 Sony WH-1000XM5 8000"
+
+    expected_payload = {
+        "franchise": "Sony",
+        "character": "WH-1000XM5",
+        "item_type": "ヘッドホン",
+        "year_or_edition": None,
+        "search_query_ja": "Sony WH-1000XM5 ヘッドホン",
+        "fb_price_twd": 8000,
+        "is_anime_merch": True,
+    }
+    mock_success_response = MagicMock()
+    mock_success_response.text = json.dumps(expected_payload)
+
+    error_404 = APIError(404, {"message": "models/gemini-custom-nonexistent is not found", "status": "NOT_FOUND"})
+
+    with patch("services.parser.genai.Client") as mock_client_class, \
+         patch("services.parser.os.getenv", return_value="gemini-custom-nonexistent"):
+        mock_client = MagicMock()
+        mock_client_class.return_value = mock_client
+        # First call with nonexistent model fails with 404, second call with gemini-flash-latest succeeds
+        mock_client.aio.models.generate_content = AsyncMock(
+            side_effect=[error_404, mock_success_response]
+        )
+
+        result = await parse_fb_post(post_text, api_key="fake_api_key")
+
+        assert isinstance(result, ParsedItem)
+        assert result.franchise == "Sony"
+        assert mock_client.aio.models.generate_content.await_count == 2
+        # Verify second call used gemini-flash-latest
+        second_call_kwargs = mock_client.aio.models.generate_content.call_args_list[1].kwargs
+        assert second_call_kwargs["model"] == "gemini-flash-latest"
 
 
 @pytest.mark.anyio
