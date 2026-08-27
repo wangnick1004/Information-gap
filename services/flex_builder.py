@@ -2,7 +2,7 @@ import logging
 import urllib.parse
 from typing import Any, Dict, Optional
 
-from services.parser import ParsedAnimeItem
+from services.parser import ParsedAnimeItem, ParsedItem
 from services.pricing import PricingResult
 from services.scraper import ScrapingResult
 
@@ -12,9 +12,13 @@ DEFAULT_PLACEHOLDER_IMAGE = (
     "https://images.unsplash.com/photo-1578632767115-351597cf2477?w=600&auto=format&fit=crop&q=80"
 )
 
+BUYEE_GREEN_COLOR = "#06C755"  # LINE / Buyee standard vibrant green
+
 
 def append_affiliate_id(url: str, affiliate_id: Optional[str]) -> str:
     """Append affiliate tracking ID to the destination URL."""
+    if not url:
+        return url
     if not affiliate_id or not affiliate_id.strip():
         return url
 
@@ -34,23 +38,128 @@ def append_affiliate_id(url: str, affiliate_id: Optional[str]) -> str:
     ))
 
 
+def build_keyword_flex_message(
+    japanese_keyword: str,
+    search_url: str,
+    affiliate_id: Optional[str] = None,
+    item_title: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Construct a LINE Flex Message bubble for generated Japanese search keywords.
+
+    Structure:
+    - Header: Text indicating success, "🎯 日拍關鍵字生成成功！" (Bold).
+    - Body: Displays "搜尋關鍵字：\n{japanese_keyword}" prominently.
+    - Footer: Primary style (green) button with text "前往 Buyee 尋寶" pointing to Buyee search URL.
+
+    Args:
+        japanese_keyword: The generated Japanese search query string.
+        search_url: The direct search URL to Buyee.
+        affiliate_id: Optional affiliate tracking ID.
+        item_title: Optional item title or brand description.
+
+    Returns:
+        Dict[str, Any]: LINE Flex Bubble JSON dictionary.
+    """
+    clean_keyword = japanese_keyword.strip() if japanese_keyword else "商品搜尋"
+    final_buyee_url = append_affiliate_id(search_url, affiliate_id)
+
+    body_contents = [
+        {
+            "type": "text",
+            "text": "搜尋關鍵字：",
+            "size": "sm",
+            "color": "#666666",
+        },
+        {
+            "type": "text",
+            "text": clean_keyword,
+            "weight": "bold",
+            "size": "xl",
+            "color": "#111111",
+            "wrap": True,
+        },
+    ]
+
+    if item_title and item_title.strip():
+        body_contents.append({
+            "type": "text",
+            "text": f"辨識商品：{item_title.strip()}",
+            "size": "xs",
+            "color": "#888888",
+            "wrap": True,
+            "margin": "md",
+        })
+
+    bubble: Dict[str, Any] = {
+        "type": "bubble",
+        "size": "mega",
+        "header": {
+            "type": "box",
+            "layout": "vertical",
+            "backgroundColor": "#F0FFF4",
+            "paddingAll": "16px",
+            "contents": [
+                {
+                    "type": "text",
+                    "text": "比價成功，來去撈便宜～",
+                    "weight": "bold",
+                    "size": "md",
+                    "color": "#16A34A",
+                }
+            ],
+        },
+        "body": {
+            "type": "box",
+            "layout": "vertical",
+            "spacing": "md",
+            "paddingAll": "20px",
+            "contents": body_contents,
+        },
+        "footer": {
+            "type": "box",
+            "layout": "vertical",
+            "spacing": "sm",
+            "paddingAll": "16px",
+            "contents": [
+                {
+                    "type": "button",
+                    "style": "primary",
+                    "color": BUYEE_GREEN_COLOR,
+                    "action": {
+                        "type": "uri",
+                        "label": "前往 Buyee 尋寶",
+                        "uri": final_buyee_url,
+                    },
+                }
+            ],
+        },
+    }
+
+    return bubble
+
+
+# Alias for convenience
+build_keyword_flex = build_keyword_flex_message
+
+
 def build_price_comparison_flex(
-    parsed_item: ParsedAnimeItem,
+    parsed_item: ParsedItem,
     pricing_result: PricingResult,
     scraper_result: ScrapingResult,
     affiliate_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
-    Construct a LINE Flex Message (Bubble Container) comparing FB and Japanese market prices.
+    Construct a rich LINE Flex Message (Bubble Container) comparing FB and Japanese market prices.
 
     Args:
-        parsed_item: Parsed franchise, character, and merch metadata.
+        parsed_item: Parsed brand, model, and merch metadata.
         pricing_result: Landed cost calculation and markup analysis.
         scraper_result: Scraped JPY prices and representative image.
         affiliate_id: Optional affiliate tracking ID.
 
     Returns:
-        Dict[str, Any]: LINE Messaging API v3 compatible Flex Bubble structure.
+        Dict[str, Any]: LINE Messaging API compatible Flex Bubble structure.
     """
     image_url = scraper_result.representative_image_url or DEFAULT_PLACEHOLDER_IMAGE
     final_buyee_url = append_affiliate_id(scraper_result.search_url, affiliate_id)
@@ -85,6 +194,21 @@ def build_price_comparison_flex(
     bubble: Dict[str, Any] = {
         "type": "bubble",
         "size": "mega",
+        "header": {
+            "type": "box",
+            "layout": "vertical",
+            "backgroundColor": "#F0FFF4",
+            "paddingAll": "12px",
+            "contents": [
+                {
+                    "type": "text",
+                    "text": "比價成功，來去撈便宜～",
+                    "weight": "bold",
+                    "size": "sm",
+                    "color": "#16A34A",
+                }
+            ],
+        },
         "hero": {
             "type": "image",
             "url": image_url,
@@ -104,22 +228,22 @@ def build_price_comparison_flex(
             "contents": [
                 {
                     "type": "text",
-                    "text": "🎌 日本動漫二手比價分析",
+                    "text": f"搜尋關鍵字：\n{parsed_item.search_query_ja}",
                     "weight": "bold",
-                    "size": "xs",
-                    "color": "#888888",
-                },
-                {
-                    "type": "text",
-                    "text": f"{parsed_item.franchise} {parsed_item.character}".strip() or "動漫商品比價",
-                    "weight": "bold",
-                    "size": "lg",
+                    "size": "md",
                     "wrap": True,
                     "color": "#111111",
                 },
                 {
                     "type": "text",
-                    "text": f"類型：{parsed_item.item_type}" if parsed_item.item_type else "類型：周邊商品",
+                    "text": f"{parsed_item.franchise} {parsed_item.character}".strip() or "商品比價",
+                    "size": "sm",
+                    "wrap": True,
+                    "color": "#444444",
+                },
+                {
+                    "type": "text",
+                    "text": f"類型：{parsed_item.item_type}" if parsed_item.item_type else "類型：商品分類",
                     "size": "xs",
                     "color": "#666666",
                     "wrap": True,
@@ -246,16 +370,16 @@ def build_price_comparison_flex(
                 {
                     "type": "button",
                     "style": "primary",
-                    "color": "#FF6F00",
+                    "color": BUYEE_GREEN_COLOR,
                     "action": {
                         "type": "uri",
-                        "label": "前往 Buyee 購買 / 查價",
+                        "label": "前往 Buyee 尋寶",
                         "uri": final_buyee_url,
                     },
                 },
                 {
                     "type": "text",
-                    "text": "由 LINE 動漫比價小幫手即時估算",
+                    "text": "由 LINE 比價小幫手即時估算",
                     "size": "xxs",
                     "color": "#CCCCCC",
                     "align": "center",

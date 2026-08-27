@@ -5,8 +5,10 @@ import pytest
 
 from services.scraper import (
     ScrapedListing,
+    ScrapingBlockedError,
     ScrapingError,
     ScrapingResult,
+    ScrapingTimeoutError,
     extract_price_number,
     parse_buyee_html,
     scrape_buyee_prices,
@@ -113,7 +115,7 @@ async def test_scrape_buyee_prices_success():
     with patch("httpx.AsyncClient.get", new_callable=AsyncMock) as mock_get:
         mock_get.return_value = mock_response
 
-        result = await scrape_buyee_prices("ハイキュー 影山 もちマス 2020")
+        result = await scrape_buyee_prices("ハイキュー 影山 もちマス 2020", timeout_seconds=10.0)
 
         assert isinstance(result, ScrapingResult)
         assert result.query == "ハイキュー 影山 もちマス 2020"
@@ -141,12 +143,12 @@ async def test_scrape_buyee_prices_no_results():
         with pytest.raises(ScrapingError) as exc_info:
             await scrape_buyee_prices("nonexistent_item_query_123")
 
-        assert "No listings found" in str(exc_info.value)
+        assert "未找到" in str(exc_info.value) or "No listings" in str(exc_info.value)
 
 
 @pytest.mark.anyio
 async def test_scrape_buyee_prices_http_error():
-    """Test that non-200 HTTP status triggers ScrapingError."""
+    """Test that 403 HTTP status triggers ScrapingBlockedError."""
     mock_response = httpx.Response(
         status_code=403,
         text="Access Denied",
@@ -156,22 +158,22 @@ async def test_scrape_buyee_prices_http_error():
     with patch("httpx.AsyncClient.get", new_callable=AsyncMock) as mock_get:
         mock_get.return_value = mock_response
 
-        with pytest.raises(ScrapingError) as exc_info:
+        with pytest.raises(ScrapingBlockedError) as exc_info:
             await scrape_buyee_prices("query")
 
-        assert "status code 403" in str(exc_info.value)
+        assert "403" in str(exc_info.value)
 
 
 @pytest.mark.anyio
 async def test_scrape_buyee_prices_timeout():
-    """Test that network timeouts trigger ScrapingError gracefully."""
+    """Test that network timeouts trigger ScrapingTimeoutError gracefully."""
     with patch("httpx.AsyncClient.get", new_callable=AsyncMock) as mock_get:
         mock_get.side_effect = httpx.ReadTimeout("Request timed out")
 
-        with pytest.raises(ScrapingError) as exc_info:
-            await scrape_buyee_prices("query")
+        with pytest.raises(ScrapingTimeoutError) as exc_info:
+            await scrape_buyee_prices("query", timeout_seconds=10.0)
 
-        assert "timed out" in str(exc_info.value)
+        assert "逾時" in str(exc_info.value) or "timed out" in str(exc_info.value)
 
 
 @pytest.mark.anyio

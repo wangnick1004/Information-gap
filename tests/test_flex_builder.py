@@ -3,6 +3,7 @@ from linebot.v3.messaging import FlexContainer
 
 from services.flex_builder import (
     append_affiliate_id,
+    build_keyword_flex_message,
     build_price_comparison_flex,
 )
 from services.parser import ParsedAnimeItem
@@ -22,6 +23,48 @@ def test_append_affiliate_id():
     # No affiliate ID passed
     assert append_affiliate_id(url, None) == url
     assert append_affiliate_id(url, "") == url
+
+
+def test_build_keyword_flex_message():
+    """Test dedicated keyword Flex Message structure with green Buyee button."""
+    japanese_keyword = "Sony WH-1000XM5 ヘッドホン"
+    search_url = "https://buyee.jp/mercari/search?keyword=Sony%20WH-1000XM5%20%E3%83%98%E3%83%83%E3%83%89%E3%83%97%E3%83%B3"
+    affiliate_id = "aff_test_888"
+
+    flex_dict = build_keyword_flex_message(
+        japanese_keyword=japanese_keyword,
+        search_url=search_url,
+        affiliate_id=affiliate_id,
+        item_title="Sony WH-1000XM5",
+    )
+
+    assert flex_dict["type"] == "bubble"
+
+    # 1. Header verification
+    assert "header" in flex_dict
+    header_text = flex_dict["header"]["contents"][0]["text"]
+    assert "比價成功，來去撈便宜～" in header_text
+    assert flex_dict["header"]["contents"][0]["weight"] == "bold"
+
+    # 2. Body verification
+    assert "body" in flex_dict
+    body_texts = [c.get("text", "") for c in flex_dict["body"]["contents"]]
+    assert any("搜尋關鍵字：" in t for t in body_texts)
+    assert any("Sony WH-1000XM5 ヘッドホン" in t for t in body_texts)
+
+    # 3. Footer verification
+    assert "footer" in flex_dict
+    button = flex_dict["footer"]["contents"][0]
+    assert button["type"] == "button"
+    assert button["style"] == "primary"
+    assert button["color"] == "#06C755"
+    assert button["action"]["type"] == "uri"
+    assert button["action"]["label"] == "前往 Buyee 尋寶"
+    assert "af=aff_test_888" in button["action"]["uri"]
+
+    # Verify line-bot-sdk parsing
+    container = FlexContainer.from_dict(flex_dict)
+    assert container is not None
 
 
 def test_build_price_comparison_flex_overpriced():
@@ -65,6 +108,8 @@ def test_build_price_comparison_flex_overpriced():
     assert flex_dict["type"] == "bubble"
     assert flex_dict["hero"]["url"] == "https://static.mercdn.net/item/detail/orig/photos/m1.jpg"
     assert "af=my_affiliate_tag" in flex_dict["footer"]["contents"][0]["action"]["uri"]
+    assert flex_dict["footer"]["contents"][0]["color"] == "#06C755"
+    assert flex_dict["footer"]["contents"][0]["action"]["label"] == "前往 Buyee 尋寶"
 
     # Verify line-bot-sdk v3 FlexContainer can parse the generated structure cleanly
     container = FlexContainer.from_dict(flex_dict)
@@ -109,8 +154,8 @@ def test_build_price_comparison_flex_fair_price():
     )
 
     assert flex_dict["type"] == "bubble"
-    # Fallback image was assigned
-    assert flex_dict["hero"]["url"].startswith("http")
+    assert flex_dict["hero"]["url"] == "https://images.unsplash.com/photo-1578632767115-351597cf2477?w=600&auto=format&fit=crop&q=80"
+    assert flex_dict["footer"]["contents"][0]["action"]["label"] == "前往 Buyee 尋寶"
 
     container = FlexContainer.from_dict(flex_dict)
     assert container is not None

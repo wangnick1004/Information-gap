@@ -9,6 +9,7 @@ from linebot.v3.exceptions import InvalidSignatureError
 from linebot.v3.messaging import (
     AsyncApiClient,
     AsyncMessagingApi,
+    AsyncMessagingApiBlob,
     Configuration,
     FlexContainer,
     FlexMessage,
@@ -16,19 +17,31 @@ from linebot.v3.messaging import (
     TextMessage,
 )
 from linebot.v3.webhook import WebhookParser
-from linebot.v3.webhooks import MessageEvent, TextMessageContent
+from linebot.v3.webhooks import ImageMessageContent, MessageEvent, TextMessageContent
 from mangum import Mangum
 from pydantic import BaseModel
 from config import Settings, settings
-from services.flex_builder import build_price_comparison_flex
+from services.flex_builder import (
+    build_keyword_flex_message,
+    build_price_comparison_flex,
+)
+# Alias FlexSendMessage for LINE SDK convention compatibility
+FlexSendMessage = FlexMessage
 from services.parser import (
     GeminiAPIError,
+    GeminiRateLimitError,
     IrrelevantPostError,
-    ParsedAnimeItem,
+    ParsedItem,
     parse_fb_post,
 )
 from services.pricing import PricingResult, calculate_landed_cost
-from services.scraper import ScrapingError, ScrapingResult, scrape_buyee_prices
+from services.scraper import (
+    ScrapingBlockedError,
+    ScrapingError,
+    ScrapingResult,
+    ScrapingTimeoutError,
+    scrape_buyee_prices,
+)
 
 # Configure logging
 logging.basicConfig(
@@ -40,7 +53,7 @@ logger = logging.getLogger("line_bot")
 # FastAPI Application Initialization
 app = FastAPI(
     title="LINE Price-Comparison Bot API",
-    description="Stateless serverless backend for anime goods price comparison on LINE",
+    description="Stateless serverless backend for goods price comparison on LINE",
     version="1.0.0",
 )
 
@@ -73,12 +86,13 @@ async def health_check() -> HealthResponse:
 
 async def handle_line_events(events: list, access_token: str) -> None:
     """
-    Process incoming LINE webhook events with the end-to-end price comparison pipeline:
-    1. Parse FB text using Gemini 1.5 Flash structured output.
-    2. Scrape real-time prices and thumbnail from Buyee Mercari.
-    3. Calculate estimated landed cost in TWD and assess markup.
-    4. Generate and reply with a LINE Flex Message bubble.
-    5. Graceful fallback on errors to ensure user is always notified.
+    Process incoming LINE webhook events with multimodal price comparison pipeline:
+    1. Extract text or fetch image bytes via LINE Blob API.
+    2. Parse entities & generate Japanese search query with Gemini.
+    3. Scrape real-time prices and thumbnail from Buyee Mercari.
+    4. Calculate estimated landed cost in TWD and assess markup.
+    5. Generate and reply with a LINE Flex Message bubble.
+    6. Graceful fallback on errors to ensure user is always notified.
     """
     if not access_token:
         logger.warning("LINE_CHANNEL_ACCESS_TOKEN is not configured; skipping API reply.")
@@ -87,54 +101,109 @@ async def handle_line_events(events: list, access_token: str) -> None:
     configuration = Configuration(access_token=access_token)
     async with AsyncApiClient(configuration) as api_client:
         line_bot_api = AsyncMessagingApi(api_client)
+        line_bot_blob_api = AsyncMessagingApiBlob(api_client)
 
         for event in events:
-            if isinstance(event, MessageEvent) and isinstance(event.message, TextMessageContent):
+            if not isinstance(event, MessageEvent):
+                continue
+
+            user_text: Optional[str] = None
+            image_bytes: Optional[bytes] = None
+
+            if isinstance(event.message, TextMessageContent):
                 user_text = event.message.text.strip()
                 logger.info(f"Processing text message from user: {user_text[:60]}...")
-
-                parsed_item: Optional[ParsedAnimeItem] = None
-
+            elif isinstance(event.message, ImageMessageContent):
+                logger.info(f"Processing image message id={event.message.id} from user...")
                 try:
-                    # Step 1: NLP Entity Extraction & Japanese Search Query Generation
-                    parsed_item = await parse_fb_post(user_text)
-
-                    # Step 2: Scrape Japanese Proxy Marketplace (Buyee Mercari)
-                    scraper_result = await scrape_buyee_prices(parsed_item.search_query_ja)
-
-                    # Step 3: Compute Landed Cost & Markup Analysis
-                    fb_price = (
-                        float(parsed_item.fb_price_twd)
-                        if parsed_item.fb_price_twd is not None
-                        else None
+                    image_bytes = await line_bot_blob_api.get_message_content(event.message.id)
+                    logger.info(f"Successfully retrieved {len(image_bytes)} bytes of image content.")
+                except Exception as exc:
+                    logger.error(f"Failed to retrieve image blob: {exc}", exc_info=True)
+                    fallback_text = "無法下載您傳送的圖片，請稍後再試或直接提供文字描述。"
+                    await line_bot_api.reply_message(
+                        ReplyMessageRequest(
+                            reply_token=event.reply_token,
+                            messages=[TextMessage(text=fallback_text)],
+                        )
                     )
-                    pricing_result = calculate_landed_cost(
-                        price_jpy=scraper_result.median_price_jpy,
-                        fb_price_twd=fb_price,
-                    )
+                    continue
+            else:
+                # Unsupported message type (stickers, audio, etc.)
+                continue
 
-                    # Step 4: Build LINE Flex Message UI with Affiliate Tracking
-                    flex_dict = build_price_comparison_flex(
-                        parsed_item=parsed_item,
-                        pricing_result=pricing_result,
-                        scraper_result=scraper_result,
+            parsed_item: Optional[ParsedItem] = None
+
+            try:
+                # Step 1: Multimodal Entity Extraction & Japanese Search Query Generation
+                parsed_item = await parse_fb_post(post_text=user_text, image_data=image_bytes)
+
+                # Step 2: Scrape Japanese Proxy Marketplace (Buyee Mercari)
+                scraper_result = await scrape_buyee_prices(parsed_item.search_query_ja)
+
+                # Step 3: Compute Landed Cost & Markup Analysis
+                fb_price = (
+                    float(parsed_item.fb_price_twd)
+                    if parsed_item.fb_price_twd is not None
+                    else None
+                )
+                pricing_result = calculate_landed_cost(
+                    price_jpy=scraper_result.median_price_jpy,
+                    fb_price_twd=fb_price,
+                )
+
+                # Step 4: Build LINE Flex Message UI with Affiliate Tracking
+                flex_dict = build_price_comparison_flex(
+                    parsed_item=parsed_item,
+                    pricing_result=pricing_result,
+                    scraper_result=scraper_result,
+                    affiliate_id=settings.buyee_affiliate_id,
+                )
+                flex_container = FlexContainer.from_dict(flex_dict)
+                alt_text = f"【比價分析】{parsed_item.franchise} {parsed_item.character}".strip()
+
+                reply_msg = FlexMessage(alt_text=alt_text, contents=flex_container)
+                await line_bot_api.reply_message(
+                    ReplyMessageRequest(
+                        reply_token=event.reply_token,
+                        messages=[reply_msg],
+                    )
+                )
+                logger.info("Successfully replied with Flex Message comparison card.")
+
+            except IrrelevantPostError as exc:
+                logger.info(f"Irrelevant post/image received: {exc}")
+                fallback_text = "無法解析此貼文或圖片，請確認是否包含明確的商品名稱、型號或清晰外觀。"
+                await line_bot_api.reply_message(
+                    ReplyMessageRequest(
+                        reply_token=event.reply_token,
+                        messages=[TextMessage(text=fallback_text)],
+                    )
+                )
+
+            except (ScrapingTimeoutError, ScrapingBlockedError, ScrapingError) as exc:
+                logger.warning(f"Scraping issue ({type(exc).__name__}): {exc}")
+                if parsed_item and exc.search_url:
+                    item_title = f"{parsed_item.franchise} {parsed_item.character}".strip()
+                    keyword_flex_dict = build_keyword_flex_message(
+                        japanese_keyword=parsed_item.search_query_ja,
+                        search_url=exc.search_url,
                         affiliate_id=settings.buyee_affiliate_id,
+                        item_title=item_title,
                     )
-                    flex_container = FlexContainer.from_dict(flex_dict)
-                    alt_text = f"【比價分析】{parsed_item.franchise} {parsed_item.character}".strip()
-
-                    reply_msg = FlexMessage(alt_text=alt_text, contents=flex_container)
+                    flex_container = FlexContainer.from_dict(keyword_flex_dict)
+                    reply_msg = FlexSendMessage(
+                        alt_text="比價成功，來去撈便宜～",
+                        contents=flex_container,
+                    )
                     await line_bot_api.reply_message(
                         ReplyMessageRequest(
                             reply_token=event.reply_token,
                             messages=[reply_msg],
                         )
                     )
-                    logger.info("Successfully replied with Flex Message comparison card.")
-
-                except IrrelevantPostError as exc:
-                    logger.info(f"Irrelevant post received: {exc}")
-                    fallback_text = "無法解析此貼文，請確認是否包含明確的動漫商品名稱與作品名。"
+                else:
+                    fallback_text = "已辨識商品，但在日本代購平台未找到相符現貨，請稍後再試。"
                     await line_bot_api.reply_message(
                         ReplyMessageRequest(
                             reply_token=event.reply_token,
@@ -142,31 +211,31 @@ async def handle_line_events(events: list, access_token: str) -> None:
                         )
                     )
 
-                except ScrapingError as exc:
-                    logger.warning(f"Scraping error: {exc}")
-                    item_desc = ""
-                    if parsed_item and (parsed_item.franchise or parsed_item.character):
-                        item_desc = f"（{parsed_item.franchise} {parsed_item.character}）"
-                    fallback_text = f"已辨識商品{item_desc}，但在日本代購平台未找到相符現貨或連線逾時，請稍後再試。"
+            except GeminiRateLimitError as exc:
+                logger.warning(f"Gemini rate limit exceeded: {exc}")
+                fallback_text = "目前查詢人數較多，請稍後再試！"
+                try:
                     await line_bot_api.reply_message(
                         ReplyMessageRequest(
                             reply_token=event.reply_token,
                             messages=[TextMessage(text=fallback_text)],
                         )
                     )
+                except Exception as reply_exc:
+                    logger.error(f"Failed to send rate limit fallback reply: {reply_exc}", exc_info=True)
 
-                except (GeminiAPIError, Exception) as exc:
-                    logger.error(f"Error executing price comparison pipeline: {exc}", exc_info=True)
-                    fallback_text = "系統處理時發生異常，請確認輸入內容或稍後再試。"
-                    try:
-                        await line_bot_api.reply_message(
-                            ReplyMessageRequest(
-                                reply_token=event.reply_token,
-                                messages=[TextMessage(text=fallback_text)],
-                            )
+            except (GeminiAPIError, Exception) as exc:
+                logger.error(f"Error executing price comparison pipeline: {exc}", exc_info=True)
+                fallback_text = "系統處理時發生異常，請確認輸入內容或稍後再試。"
+                try:
+                    await line_bot_api.reply_message(
+                        ReplyMessageRequest(
+                            reply_token=event.reply_token,
+                            messages=[TextMessage(text=fallback_text)],
                         )
-                    except Exception as reply_exc:
-                        logger.error(f"Failed to send fallback reply: {reply_exc}", exc_info=True)
+                    )
+                except Exception as reply_exc:
+                    logger.error(f"Failed to send fallback reply: {reply_exc}", exc_info=True)
 
 
 @app.post("/api/webhook", summary="LINE Messaging API Webhook Endpoint")
@@ -178,7 +247,7 @@ async def line_webhook(
     """
     LINE Webhook receiver endpoint.
     - Validates signature (`X-Line-Signature`).
-    - Parses webhook events.
+    - Parses webhook events (Text and Image messages).
     - Runs full end-to-end price comparison pipeline.
     - Returns HTTP 200 on success, or HTTP 400 on signature / payload errors.
     """

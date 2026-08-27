@@ -1,11 +1,14 @@
+import asyncio
+import io
 import json
 import logging
 import os
-from typing import Optional
+from typing import Any, List, Optional, Union
 
 from google import genai
 from google.genai import types
 from google.genai.errors import APIError
+from PIL import Image
 from pydantic import BaseModel, Field
 
 from config import settings
@@ -13,28 +16,28 @@ from config import settings
 logger = logging.getLogger("line_bot.parser")
 
 
-class ParsedAnimeItem(BaseModel):
-    """Structured entity extraction schema for anime merchandise posts."""
+class ParsedItem(BaseModel):
+    """Structured entity extraction schema for physical retail goods trading posts."""
 
     franchise: str = Field(
         default="",
-        description="The anime/manga/game title translated to standard Japanese (e.g., 'ハイキュー!!', '呪術廻戦').",
+        description="The core brand, manufacturer, or IP/series name translated/formatted for Japanese search (e.g., 'Sony', 'Yonex', 'Nikon', 'ハイキュー!!', 'Pokemon').",
     )
     character: str = Field(
         default="",
-        description="The character name in standard Japanese kanji/katakana (e.g., '影山飛雄', '五条悟').",
+        description="The model name, character name, or specific product designation (e.g., 'WH-1000XM5', 'ASTROX 88D PRO', 'D850', '影山飛雄', 'リザードン').",
     )
     item_type: str = Field(
         default="",
-        description="The type of merchandise in Japanese (e.g., 'もちもちマスコット', '缶バッジ', 'アクリルスタンド', 'フィギュア').",
+        description="The product category or item type in standard Japanese (e.g., 'ヘッドホン', 'バドミントンラケット', '一眼レフカメラ', '缶バッジ', 'フィギュア', 'スニーカー').",
     )
     year_or_edition: Optional[str] = Field(
         default=None,
-        description="Special edition, event, or release year if mentioned (e.g., '2020', 'ジャンプフェスタ', 'バースデー').",
+        description="Special edition, version, generation, or release year if mentioned (e.g., 'Mark II', '2024', 'PRO', '限定版').",
     )
     search_query_ja: str = Field(
         default="",
-        description="The combined optimal Japanese search string for Japanese marketplaces (Mercari / Yahoo Auctions via Buyee).",
+        description="The combined concise and precise Japanese search query for Japanese marketplaces (Mercari / Yahoo Auctions via Buyee).",
     )
     fb_price_twd: Optional[int] = Field(
         default=None,
@@ -42,8 +45,12 @@ class ParsedAnimeItem(BaseModel):
     )
     is_anime_merch: bool = Field(
         default=True,
-        description="True if the post is an anime/manga/game merchandise trade/sale; False if irrelevant, general text, or missing merchandise details.",
+        description="True if the post describes any physical tradeable retail goods; False if irrelevant, spam, general text, or lacks identifiable product info.",
     )
+
+
+# Alias for backward compatibility across modules
+ParsedAnimeItem = ParsedItem
 
 
 class ParsingError(Exception):
@@ -52,7 +59,7 @@ class ParsingError(Exception):
 
 
 class IrrelevantPostError(ParsingError):
-    """Raised when the text lacks recognizable anime merchandise details or is irrelevant."""
+    """Raised when the text/image lacks recognizable product details or is irrelevant."""
     pass
 
 
@@ -61,129 +68,190 @@ class GeminiAPIError(ParsingError):
     pass
 
 
+class GeminiRateLimitError(GeminiAPIError):
+    """Raised when Gemini API rate limits (429 RESOURCE_EXHAUSTED) are exceeded after retries."""
+    pass
+
+
 SYSTEM_INSTRUCTION = """
-You are an expert in Japanese ACG (Anime, Comic, Games) merchandise valuation and Taiwanese secondary market trading terminology.
-Your mission is to parse noisy, slang-heavy Facebook trading posts (Traditional Chinese) and extract structured entity details translated into accurate Japanese marketplace search terms (Mercari / Buyee).
+You are an expert in Japanese cross-border commerce, secondhand market valuation (Yahoo! Auctions, Mercari, Rakuten, Buyee), and secondary market trading identification from text and product images.
+Your mission is to analyze trading posts or product photos for ANY physical retail goods (e.g., consumer electronics, audio gear, cameras, badminton/sports equipment, sneakers, trading cards, anime merchandise, collectibles, watches, etc.) and extract structured product details translated into clean, search-effective Japanese keywords.
 
-### Domain Knowledge & Slang Guide:
-1. **Taiwanese Trading Slang (MUST IGNORE when forming search queries)**:
-   - Transaction actions: 售 (sell), 收 (buy/WTT), 換 (trade), 退坑 (leaving fandom), 出清 (clearance), 回血 (fund recovery), 可議 (negotiable).
-   - Bundling terms: 綁 (bundle, e.g., 綁1, 綁2, 需多帶), 不拆 (no split), 帶多優先 (priority for multiple items), 默認初傷 (default factory flaws), 微瑕 (minor defects).
-   - NEVER include these transaction terms in `search_query_ja`.
+### Multimodal Analysis Instructions:
+- Analyze the provided image (and text if any) to identify the specific physical retail item, its brand, model, and item type. Translate this into a precise Japanese search query for e-commerce platforms like Buyee/Mercari.
+- If an image is provided, inspect logos, packaging text, labels, model numbers, barcodes, character visual traits, colorways, or device physical form factors.
 
-2. **Merchandise Category Translation (Mandarin Slang -> Japanese)**:
-   - 趴娃 / 趴趴 -> もちもちマスコット (or おまんじゅう / ぬいぐるみ)
-   - 徽章 / 吧唧 / 胸章 -> 缶バッジ
-   - 拍立得 / 相卡 -> ぱしゃこれ (or ポラショット / チェキ / スナップマイド)
-   - 壓克力立牌 / 立牌 / 壓克力 -> アクリルスタンド
-   - 生日磚 / 壓克力磚 -> アクリルブロック / バースデーブロック
-   - 色紙 -> 色紙
-   - 娃娃 / 玩偶 / 棉花娃 -> ぬいぐるみ / マスコット
-   - 公仔 / 手辦 / 景品 -> フィギュア
-   - 一番賞 -> 一番くじ
-   - 特典 -> 特典
+### Guidelines & Domain Knowledge:
+1. **Trading Slang & Noise (MUST IGNORE when forming search queries)**:
+   - Transaction actions: 售 (sell), 收 (buy/WTT), 換 (trade), 降價 (price drop), 誠可議 (negotiable), 出清 (clearance), 回血 (fund recovery), 退坑.
+   - Condition & accessories: 全新 (brand new), 95成新 (like new), 9成新, 二手 (used), 附發票 (with receipt), 盒裝完整 (complete in box), 原廠配件 (original accessories), 默認初傷, 微瑕.
+   - Bundling & logistics: 綁 (bundle), 不拆 (no split), 拆售, 雙北面交 (meetup), 賣貨便, 運費另計.
+   - NEVER include these transaction/condition terms in `search_query_ja`.
 
-3. **Common Series Nicknames (Translate to official Japanese title)**:
-   - 排少 / HQ / 排球 -> ハイキュー!!
-   - 咒術 / 咒術迴戰 / JJK -> 呪術廻戦
-   - 我推 / 推之子 -> 推しの子
-   - 藍色監獄 / 藍監 -> ブルーロック
-   - 獵人 / 全職獵人 -> HUNTER×HUNTER
-   - 鬼滅 -> 鬼滅の刃
-   - 合奏 / 偶像夢幻祭 / ES -> あんさんぶるスターズ!!
-   - 名偵探柯南 / 柯南 -> 名探偵コナン
-   - 吉伊卡哇 -> ちいかわ
-   - 葬送的芙莉蓮 -> 葬送のフリーレン
-   - 間諜家家酒 -> SPY×FAMILY
-   - 文豪野犬 -> 文豪ストレイドッグス
-   - 家教 / 家庭教師 -> 家庭教師ヒットマンREBORN!
+2. **Entity Extraction Rules**:
+   - `franchise`: Core Brand, Manufacturer, or IP Franchise (e.g., Sony, Canon, Nikon, Yonex, Victor, Apple, Nintendo, Nike, Bandai, Pokémon, ハイキュー!!).
+   - `character`: Model Name, Specific Product Name, Character, or Sub-line (e.g., WH-1000XM5, EOS R6, D850, ASTROX 88D, Air Jordan 1, 影山飛雄, リザードン).
+   - `item_type`: Product Category in standard Japanese (e.g., ヘッドホン, バドミントンラケット, ミラーレス一眼カメラ, スニーカー, 缶バッジ, フィギュア, トレカ).
+   - `year_or_edition`: Generation, version, or year if it is critical for distinguishing the product (e.g., Mark II, Gen 2, 2024).
 
-4. **Search Query Construction (`search_query_ja`)**:
-   - Combine: `[Franchise (JA)] [Character (JA)] [Item Type (JA)] [Edition/Year (if applicable)]` separated by spaces.
-   - Keep it concise, high-relevance, and search-friendly for Japanese marketplace engines.
+3. **Search Query Construction (`search_query_ja`)**:
+   - Combine: `[Brand / Franchise] [Model / Product Name / Character] [Item Category] [Edition/Year if applicable]` separated by single spaces.
+   - Ensure the search query is concise, accurate, and optimized for Japanese marketplace search engines (Mercari, Yahoo Auctions).
+   - Keep global brand names (e.g., Sony, Yonex, Canon, Apple) in their standard Latin/Japanese form commonly used on Japanese retail sites.
 
-5. **Price Extraction (`fb_price_twd`)**:
-   - Extract the target item's selling price as an integer in TWD (e.g., '1500', '$1500', '1500元' -> 1500).
-   - If no price is mentioned or it is purely a trade/inquiry post without a price, set to null.
+4. **Price Extraction (`fb_price_twd`)**:
+   - Extract the target item's selling price as an integer in TWD (e.g., '1500', '$1500', '1500元', 'NT$1500' -> 1500).
+   - If no price is mentioned or it is purely an image/inquiry without price, set to null.
 
-6. **Relevance Flag (`is_anime_merch`)**:
-   - Set `is_anime_merch: true` if the post contains valid anime/manga merchandise trade info.
-   - Set `is_anime_merch: false` if the input is general conversational text, greetings, irrelevant content, or does not mention identifiable anime merchandise.
+5. **Relevance Flag (`is_anime_merch` / is_valid_goods)**:
+   - Set `is_anime_merch: true` if the input describes or depicts ANY valid physical retail product.
+   - Set `is_anime_merch: false` ONLY if the input is general conversational text, irrelevant scenery/memes, job ads, or lacks identifiable physical goods.
 """.strip()
 
 
 async def parse_fb_post(
-    post_text: str,
+    post_text: Optional[str] = None,
+    image_data: Optional[Union[bytes, Image.Image]] = None,
+    mime_type: str = "image/jpeg",
     api_key: Optional[str] = None,
-) -> ParsedAnimeItem:
+    max_retries: int = 3,
+    retry_delay_seconds: float = 3.0,
+) -> ParsedItem:
     """
-    Parse a Facebook anime trading post using Gemini 1.5 Flash structured output.
+    Parse a physical goods trading post or image using Gemini multimodal structured output,
+    with automatic retry on 429 RESOURCE_EXHAUSTED rate limits.
 
     Args:
-        post_text: Raw text or content extracted from a Facebook post.
+        post_text: Optional text or caption from user/post.
+        image_data: Optional raw bytes or PIL Image object of the product image.
+        mime_type: MIME type of the image if bytes (default "image/jpeg").
         api_key: Optional Gemini API key (defaults to settings/environment).
+        max_retries: Maximum number of retry attempts for 429 rate limit errors (default 3).
+        retry_delay_seconds: Delay before retrying in seconds (default 3.0s).
 
     Returns:
-        ParsedAnimeItem: Structured entity extraction result.
+        ParsedItem: Structured entity extraction result.
 
     Raises:
-        IrrelevantPostError: When the post is not anime merchandise or lacks details.
-        GeminiAPIError: When API key is missing or Gemini API call fails.
+        IrrelevantPostError: When the input lacks recognizable product details or is empty.
+        GeminiRateLimitError: When rate limit (429) persists after all retries.
+        GeminiAPIError: When API key is missing or non-retryable Gemini API call fails.
     """
     cleaned_text = post_text.strip() if post_text else ""
-    if not cleaned_text:
-        raise IrrelevantPostError("Post text is empty or blank.")
+    if not cleaned_text and image_data is None:
+        raise IrrelevantPostError("Post text and image data are both empty.")
 
     gemini_key = api_key or settings.gemini_api_key or os.getenv("GEMINI_API_KEY")
     if not gemini_key:
         logger.error("GEMINI_API_KEY is not configured.")
         raise GeminiAPIError("GEMINI_API_KEY is not set in environment or settings.")
 
-    try:
-        client = genai.Client(api_key=gemini_key)
+    # Prepare multimodal contents
+    contents: List[Any] = []
 
-        config = types.GenerateContentConfig(
-            response_mime_type="application/json",
-            response_schema=ParsedAnimeItem,
-            system_instruction=SYSTEM_INSTRUCTION,
-            temperature=0.1,
-        )
+    if image_data is not None:
+        raw_bytes: bytes
+        if isinstance(image_data, Image.Image):
+            buffer = io.BytesIO()
+            fmt = image_data.format or "JPEG"
+            image_data.save(buffer, format=fmt)
+            raw_bytes = buffer.getvalue()
+            mime_type = f"image/{fmt.lower()}"
+        else:
+            raw_bytes = image_data
 
-        response = await client.aio.models.generate_content(
-            model="gemini-1.5-flash",
-            contents=cleaned_text,
-            config=config,
-        )
+        image_part = types.Part.from_bytes(data=raw_bytes, mime_type=mime_type)
+        contents.append(image_part)
 
-        if not response or not response.text:
-            raise GeminiAPIError("Empty response received from Gemini API.")
+        if cleaned_text:
+            contents.append(
+                f"User text/notes: {cleaned_text}\n"
+                "Analyze the provided image (and text if any) to identify the specific physical retail item, its brand, and model. "
+                "Translate this into a precise Japanese search query for e-commerce platforms like Buyee/Mercari."
+            )
+        else:
+            contents.append(
+                "Analyze the provided image to identify the specific physical retail item, its brand, model, and item type. "
+                "Translate this into a precise Japanese search query for e-commerce platforms like Buyee/Mercari."
+            )
+    else:
+        contents.append(cleaned_text)
 
-        # Parse structured output
-        raw_json = json.loads(response.text)
-        parsed_result = ParsedAnimeItem.model_validate(raw_json)
+    client = genai.Client(api_key=gemini_key)
+    config = types.GenerateContentConfig(
+        response_mime_type="application/json",
+        response_schema=ParsedItem,
+        system_instruction=SYSTEM_INSTRUCTION,
+        temperature=0.1,
+    )
+    model_name = os.getenv("GEMINI_MODEL", "gemini-1.5-pro")
 
-        # Validate that the item is relevant and has minimal query information
-        if not parsed_result.is_anime_merch or not parsed_result.search_query_ja.strip():
-            logger.info(f"Post deemed irrelevant or lacking merchandise info: {cleaned_text[:50]}...")
-            raise IrrelevantPostError(
-                "Post does not contain recognizable anime merchandise information."
+    for attempt in range(1, max_retries + 1):
+        try:
+            response = await client.aio.models.generate_content(
+                model=model_name,
+                contents=contents,
+                config=config,
             )
 
-        logger.info(
-            f"Successfully parsed post. Franchise: '{parsed_result.franchise}', "
-            f"Character: '{parsed_result.character}', Query: '{parsed_result.search_query_ja}', "
-            f"Price: {parsed_result.fb_price_twd} TWD"
-        )
-        return parsed_result
+            if not response or not response.text:
+                raise GeminiAPIError("Empty response received from Gemini API.")
 
-    except IrrelevantPostError:
-        raise
-    except APIError as exc:
-        logger.error(f"Gemini API returned an error: {exc}", exc_info=True)
-        raise GeminiAPIError(f"Gemini API error: {exc}") from exc
-    except json.JSONDecodeError as exc:
-        logger.error(f"Failed to decode JSON from Gemini output: {exc}", exc_info=True)
-        raise GeminiAPIError("Failed to parse Gemini response as JSON.") from exc
-    except Exception as exc:
-        logger.error(f"Unexpected error during Gemini parsing: {exc}", exc_info=True)
-        raise GeminiAPIError(f"Unexpected parsing error: {exc}") from exc
+            # Parse structured output
+            raw_json = json.loads(response.text)
+            parsed_result = ParsedItem.model_validate(raw_json)
+
+            # Validate that the item is relevant and has minimal query information
+            if not parsed_result.is_anime_merch or not parsed_result.search_query_ja.strip():
+                logger.info(f"Post/Image deemed irrelevant or lacking product info: {cleaned_text[:50]}...")
+                raise IrrelevantPostError(
+                    "無法解析此貼文，請確認是否包含明確的商品名稱或型號。"
+                )
+
+            logger.info(
+                f"Successfully parsed input. Brand/Franchise: '{parsed_result.franchise}', "
+                f"Model/Character: '{parsed_result.character}', Query: '{parsed_result.search_query_ja}', "
+                f"Price: {parsed_result.fb_price_twd} TWD"
+            )
+            return parsed_result
+
+        except IrrelevantPostError:
+            raise
+        except APIError as exc:
+            is_rate_limit = (
+                getattr(exc, "code", None) == 429
+                or "429" in str(exc)
+                or "RESOURCE_EXHAUSTED" in str(exc)
+            )
+            if is_rate_limit:
+                if attempt < max_retries:
+                    wait_time = retry_delay_seconds * attempt
+                    logger.warning(
+                        f"Gemini API rate limited (429/RESOURCE_EXHAUSTED). Retrying attempt {attempt}/{max_retries} in {wait_time}s..."
+                    )
+                    print(f"⏳ [Gemini 429 Rate Limit] Retrying attempt {attempt}/{max_retries} in {wait_time}s...")
+                    await asyncio.sleep(wait_time)
+                    continue
+                else:
+                    logger.error(f"Gemini API rate limit exceeded after {max_retries} retries: {exc}")
+                    raise GeminiRateLimitError("目前查詢人數較多，請稍後再試！") from exc
+            else:
+                logger.error(f"Gemini API returned an error: {exc}", exc_info=True)
+                raise GeminiAPIError(f"Gemini API error: {exc}") from exc
+        except json.JSONDecodeError as exc:
+            logger.error(f"Failed to decode JSON from Gemini output: {exc}", exc_info=True)
+            raise GeminiAPIError("Failed to parse Gemini response as JSON.") from exc
+        except Exception as exc:
+            if "429" in str(exc) or "RESOURCE_EXHAUSTED" in str(exc):
+                if attempt < max_retries:
+                    wait_time = retry_delay_seconds * attempt
+                    logger.warning(f"Rate limit exception caught. Retrying attempt {attempt}/{max_retries} in {wait_time}s...")
+                    print(f"⏳ [Gemini 429 Rate Limit] Retrying attempt {attempt}/{max_retries} in {wait_time}s...")
+                    await asyncio.sleep(wait_time)
+                    continue
+                else:
+                    raise GeminiRateLimitError("目前查詢人數較多，請稍後再試！") from exc
+            logger.error(f"Unexpected error during Gemini parsing: {exc}", exc_info=True)
+            raise GeminiAPIError(f"Unexpected parsing error: {exc}") from exc
+
+    raise GeminiRateLimitError("目前查詢人數較多，請稍後再試！")

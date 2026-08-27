@@ -1,6 +1,7 @@
 import logging
 import re
 import statistics
+import time
 import urllib.parse
 from typing import List, Optional
 
@@ -38,15 +39,42 @@ class ScrapingResult(BaseModel):
 
 
 class ScrapingError(Exception):
-    """Custom exception raised when scraping fails or no results are found."""
+    """Base exception raised when scraping fails."""
+
+    def __init__(self, message: str, search_url: Optional[str] = None, query: Optional[str] = None):
+        super().__init__(message)
+        self.message = message
+        self.search_url = search_url
+        self.query = query
+
+
+class ScrapingTimeoutError(ScrapingError):
+    """Raised when the scraping network request times out."""
     pass
 
 
-USER_AGENT = (
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) "
-    "Chrome/124.0.0.0 Safari/537.36"
-)
+class ScrapingBlockedError(ScrapingError):
+    """Raised when the proxy site blocks or returns anti-bot challenges (e.g., 202/403)."""
+    pass
+
+
+DEFAULT_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+    "Accept-Language": "ja,zh-TW;q=0.9,zh;q=0.8,en-US;q=0.7,en;q=0.6",
+    "Sec-Ch-Ua": '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
+    "Sec-Ch-Ua-Mobile": "?0",
+    "Sec-Ch-Ua-Platform": '"macOS"',
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "none",
+    "Sec-Fetch-User": "?1",
+    "Upgrade-Insecure-Requests": "1",
+}
 
 BUYEE_MERCARI_BASE_URL = "https://buyee.jp/mercari/search"
 
@@ -55,7 +83,6 @@ def extract_price_number(text: str) -> Optional[float]:
     """Extract numeric JPY price from text like '¥1,500', '1500円', '2,300 JPY'."""
     if not text:
         return None
-    # Remove common whitespace and commas
     cleaned = text.replace(",", "").strip()
     match = re.search(r"[¥￥]?\s*(\d+)\s*(?:円|JPY)?", cleaned)
     if match:
@@ -80,7 +107,6 @@ def parse_buyee_html(html_content: str, max_items: int = 5) -> List[ScrapedListi
     soup = BeautifulSoup(html_content, "html.parser")
     listings: List[ScrapedListing] = []
 
-    # Common card containers used by Buyee Mercari
     card_selectors = [
         ".itemCard",
         ".itemCard__item",
@@ -99,13 +125,12 @@ def parse_buyee_html(html_content: str, max_items: int = 5) -> List[ScrapedListi
             card_elements = found
             break
 
-    # If cards found with standard selectors
     if card_elements:
         for card in card_elements:
             if len(listings) >= max_items:
                 break
 
-            # 1. Price extraction
+            # Price extraction
             price_elem = card.select_one(
                 ".itemCard__price, .price, .g-price, .item-price, .itemCard__price--yen, span[class*='price']"
             )
@@ -115,7 +140,7 @@ def parse_buyee_html(html_content: str, max_items: int = 5) -> List[ScrapedListi
             if price is None or price <= 0:
                 continue
 
-            # 2. Image extraction
+            # Image extraction
             img_elem = card.select_one("img")
             img_url: Optional[str] = None
             if img_elem:
@@ -128,7 +153,7 @@ def parse_buyee_html(html_content: str, max_items: int = 5) -> List[ScrapedListi
                 if img_url and img_url.startswith("//"):
                     img_url = "https:" + img_url
 
-            # 3. Title extraction
+            # Title extraction
             title_elem = card.select_one(
                 ".itemCard__title, .itemCard__itemName, .item-name, a[title], img[alt]"
             )
@@ -144,16 +169,14 @@ def parse_buyee_html(html_content: str, max_items: int = 5) -> List[ScrapedListi
                 )
             )
 
-    # Fallback parser if structured selectors failed
+    # Fallback parser if structured card selectors yielded no results
     if not listings:
-        # Search for any elements containing JPY price patterns
         price_tags = soup.find_all(string=re.compile(r"[¥￥]\s*[0-9,]+|[0-9,]+\s*円"))
         for p_tag in price_tags:
             if len(listings) >= max_items:
                 break
             price = extract_price_number(p_tag)
             if price and price > 0:
-                # Attempt to find nearest parent container with image
                 parent = p_tag.find_parent(["div", "li", "article", "a"])
                 img_url = None
                 if parent:
@@ -180,7 +203,7 @@ def parse_buyee_html(html_content: str, max_items: int = 5) -> List[ScrapedListi
 
 async def scrape_buyee_prices(
     search_query_ja: str,
-    timeout_seconds: float = 4.0,
+    timeout_seconds: float = 10.0,
     client: Optional[httpx.AsyncClient] = None,
 ) -> ScrapingResult:
     """
@@ -188,14 +211,16 @@ async def scrape_buyee_prices(
 
     Args:
         search_query_ja: Japanese keyword(s) to query on Mercari/Buyee.
-        timeout_seconds: Request timeout in seconds (default 4.0s).
+        timeout_seconds: Strict HTTP request timeout in seconds (default 10.0s).
         client: Optional pre-configured httpx.AsyncClient (useful for mocking/testing).
 
     Returns:
         ScrapingResult: Aggregated lowest/median price and representative thumbnail.
 
     Raises:
-        ScrapingError: When network fails, status is non-200, or no listings are found.
+        ScrapingTimeoutError: When network request exceeds the timeout threshold.
+        ScrapingBlockedError: When the target site returns anti-bot challenge (e.g. 202/403).
+        ScrapingError: When no listings are found or general scraping errors occur.
     """
     clean_query = search_query_ja.strip() if search_query_ja else ""
     if not clean_query:
@@ -204,34 +229,56 @@ async def scrape_buyee_prices(
     encoded_keyword = urllib.parse.quote(clean_query)
     search_url = f"{BUYEE_MERCARI_BASE_URL}?keyword={encoded_keyword}"
 
-    headers = {
-        "User-Agent": USER_AGENT,
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-        "Accept-Language": "ja,zh-TW;q=0.9,en-US;q=0.8,en;q=0.7",
-    }
+    # Print debug URL for manual inspection
+    print(f"\n🔍 [Scraper] Query: '{clean_query}'")
+    print(f"🌐 [Scraper Target URL]: {search_url}")
+    print(f"⏱️ [Scraper] Configured timeout: {timeout_seconds}s")
+
+    headers = dict(DEFAULT_HEADERS)
+    timeout_config = httpx.Timeout(timeout_seconds, connect=5.0)
+
+    start_time = time.time()
 
     try:
         if client:
-            response = await client.get(search_url, headers=headers, timeout=timeout_seconds)
+            response = await client.get(search_url, headers=headers, timeout=timeout_config)
         else:
-            async with httpx.AsyncClient(timeout=timeout_seconds, follow_redirects=True) as async_http_client:
+            async with httpx.AsyncClient(timeout=timeout_config, follow_redirects=True) as async_http_client:
                 response = await async_http_client.get(search_url, headers=headers)
+
+        elapsed = time.time() - start_time
+        print(f"📥 [Scraper] Response received in {elapsed:.2f}s (HTTP {response.status_code})")
+
+        if response.status_code in (202, 403):
+            logger.warning(f"Buyee returned anti-bot challenge status {response.status_code} for query: {clean_query}")
+            raise ScrapingBlockedError(
+                f"日本代購平台返回驗證狀態 ({response.status_code})",
+                search_url=search_url,
+                query=clean_query,
+            )
 
         if response.status_code != 200:
             logger.error(f"Buyee returned HTTP status {response.status_code} for query: {clean_query}")
-            raise ScrapingError(f"Buyee scraping failed with status code {response.status_code}")
+            raise ScrapingError(
+                f"Buyee scraping failed with status code {response.status_code}",
+                search_url=search_url,
+                query=clean_query,
+            )
 
         listings = parse_buyee_html(response.text, max_items=5)
 
         if not listings:
             logger.warning(f"No listings found on Buyee for query: {clean_query}")
-            raise ScrapingError(f"No listings found on Buyee for query: '{clean_query}'")
+            raise ScrapingError(
+                f"在 Buyee 平台上未找到符合「{clean_query}」的商品",
+                search_url=search_url,
+                query=clean_query,
+            )
 
         prices = [item.price_jpy for item in listings]
         lowest_price = min(prices)
         median_price = statistics.median(prices)
 
-        # Select first valid representative image URL
         rep_image_url: Optional[str] = None
         for item in listings:
             if item.image_url and item.image_url.startswith("http"):
@@ -253,14 +300,30 @@ async def scrape_buyee_prices(
             total_found=len(listings),
         )
 
-    except ScrapingError:
+    except (ScrapingTimeoutError, ScrapingBlockedError, ScrapingError):
         raise
     except httpx.TimeoutException as exc:
+        elapsed = time.time() - start_time
+        print(f"❌ [Scraper Timeout] Request exceeded {timeout_seconds}s (took {elapsed:.2f}s): {exc}")
         logger.error(f"Scraping timeout for query '{clean_query}': {exc}")
-        raise ScrapingError("Network request to Japanese proxy marketplace timed out.") from exc
+        raise ScrapingTimeoutError(
+            f"連線日本代購平台逾時 (超過 {timeout_seconds} 秒)",
+            search_url=search_url,
+            query=clean_query,
+        ) from exc
     except httpx.RequestError as exc:
+        elapsed = time.time() - start_time
+        print(f"❌ [Scraper Network Error] in {elapsed:.2f}s: {exc}")
         logger.error(f"HTTP network error while scraping '{clean_query}': {exc}")
-        raise ScrapingError(f"Network error connecting to Buyee: {exc}") from exc
+        raise ScrapingError(
+            f"連線至代購平台失敗: {exc}",
+            search_url=search_url,
+            query=clean_query,
+        ) from exc
     except Exception as exc:
         logger.error(f"Unexpected error while scraping Buyee: {exc}", exc_info=True)
-        raise ScrapingError(f"Failed to scrape marketplace: {exc}") from exc
+        raise ScrapingError(
+            f"解析代購平台資料失敗: {exc}",
+            search_url=search_url,
+            query=clean_query,
+        ) from exc

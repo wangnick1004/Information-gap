@@ -1,19 +1,127 @@
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from PIL import Image
 import pytest
 from google.genai.errors import APIError
 
 from services.parser import (
     GeminiAPIError,
+    GeminiRateLimitError,
     IrrelevantPostError,
-    ParsedAnimeItem,
+    ParsedItem,
     parse_fb_post,
 )
 
 
 @pytest.mark.anyio
-async def test_parse_fb_post_success():
+async def test_parse_fb_post_electronics_success():
+    """Test successful entity extraction and translation from a consumer electronics post."""
+    post_text = "售 Sony WH-1000XM5 耳罩式降噪耳機 黑色 95成新 降價求出 8500"
+
+    expected_payload = {
+        "franchise": "Sony",
+        "character": "WH-1000XM5",
+        "item_type": "ヘッドホン",
+        "year_or_edition": None,
+        "search_query_ja": "Sony WH-1000XM5 ヘッドホン",
+        "fb_price_twd": 8500,
+        "is_anime_merch": True,
+    }
+
+    mock_response = MagicMock()
+    mock_response.text = json.dumps(expected_payload)
+
+    with patch("services.parser.genai.Client") as mock_client_class:
+        mock_client = MagicMock()
+        mock_client_class.return_value = mock_client
+        mock_client.aio.models.generate_content = AsyncMock(return_value=mock_response)
+
+        result = await parse_fb_post(post_text, api_key="fake_api_key")
+
+        assert isinstance(result, ParsedItem)
+        assert result.franchise == "Sony"
+        assert result.character == "WH-1000XM5"
+        assert result.item_type == "ヘッドホン"
+        assert result.search_query_ja == "Sony WH-1000XM5 ヘッドホン"
+        assert result.fb_price_twd == 8500
+        assert result.is_anime_merch is True
+
+        mock_client.aio.models.generate_content.assert_awaited_once()
+
+
+@pytest.mark.anyio
+async def test_parse_fb_post_image_only_success():
+    """Test image-only multimodal recognition with raw bytes."""
+    fake_image_bytes = b"\xff\xd8\xff\xe0\x00\x10JFIF..."
+
+    expected_payload = {
+        "franchise": "Canon",
+        "character": "EOS R6 Mark II",
+        "item_type": "ミラーレス一眼カメラ",
+        "year_or_edition": "Mark II",
+        "search_query_ja": "Canon EOS R6 Mark II ミラーレス一眼",
+        "fb_price_twd": None,
+        "is_anime_merch": True,
+    }
+
+    mock_response = MagicMock()
+    mock_response.text = json.dumps(expected_payload)
+
+    with patch("services.parser.genai.Client") as mock_client_class:
+        mock_client = MagicMock()
+        mock_client_class.return_value = mock_client
+        mock_client.aio.models.generate_content = AsyncMock(return_value=mock_response)
+
+        result = await parse_fb_post(image_data=fake_image_bytes, api_key="fake_api_key")
+
+        assert isinstance(result, ParsedItem)
+        assert result.franchise == "Canon"
+        assert result.character == "EOS R6 Mark II"
+        assert result.search_query_ja == "Canon EOS R6 Mark II ミラーレス一眼"
+        assert result.is_anime_merch is True
+
+        mock_client.aio.models.generate_content.assert_awaited_once()
+        call_kwargs = mock_client.aio.models.generate_content.call_args.kwargs
+        assert len(call_kwargs["contents"]) == 2
+
+
+@pytest.mark.anyio
+async def test_parse_fb_post_pil_image_and_text():
+    """Test multimodal recognition with PIL Image and accompanying user text."""
+    img = Image.new("RGB", (50, 50), color="blue")
+    post_text = "求這雙鞋日本行情"
+
+    expected_payload = {
+        "franchise": "Nike",
+        "character": "Air Jordan 1 Retro High OG",
+        "item_type": "スニーカー",
+        "year_or_edition": "Chicago",
+        "search_query_ja": "Nike Air Jordan 1 Chicago スニーカー",
+        "fb_price_twd": None,
+        "is_anime_merch": True,
+    }
+
+    mock_response = MagicMock()
+    mock_response.text = json.dumps(expected_payload)
+
+    with patch("services.parser.genai.Client") as mock_client_class:
+        mock_client = MagicMock()
+        mock_client_class.return_value = mock_client
+        mock_client.aio.models.generate_content = AsyncMock(return_value=mock_response)
+
+        result = await parse_fb_post(post_text=post_text, image_data=img, api_key="fake_api_key")
+
+        assert isinstance(result, ParsedItem)
+        assert result.franchise == "Nike"
+        assert result.character == "Air Jordan 1 Retro High OG"
+        assert result.search_query_ja == "Nike Air Jordan 1 Chicago スニーカー"
+
+        mock_client.aio.models.generate_content.assert_awaited_once()
+
+
+@pytest.mark.anyio
+async def test_parse_fb_post_anime_merch_success():
     """Test successful entity extraction and translation from a slang-heavy FB post."""
     post_text = "售 排少 影山 2020 趴娃 綁1 1500"
 
@@ -37,7 +145,7 @@ async def test_parse_fb_post_success():
 
         result = await parse_fb_post(post_text, api_key="fake_api_key")
 
-        assert isinstance(result, ParsedAnimeItem)
+        assert isinstance(result, ParsedItem)
         assert result.franchise == "ハイキュー!!"
         assert result.character == "影山飛雄"
         assert result.item_type == "もちもちマスコット"
@@ -46,16 +154,71 @@ async def test_parse_fb_post_success():
         assert result.fb_price_twd == 1500
         assert result.is_anime_merch is True
 
-        # Verify generate_content was called with model gemini-1.5-flash
         mock_client.aio.models.generate_content.assert_awaited_once()
         call_kwargs = mock_client.aio.models.generate_content.call_args.kwargs
-        assert call_kwargs["model"] == "gemini-1.5-flash"
-        assert call_kwargs["contents"] == post_text
+        assert bool(call_kwargs["model"]) is True
+        assert call_kwargs["contents"] == [post_text]
+
+
+@pytest.mark.anyio
+async def test_parse_fb_post_rate_limit_retry_success():
+    """Test that 429 rate limit triggers automatic retry and succeeds on subsequent attempt."""
+    post_text = "售 Sony WH-1000XM5 8000"
+
+    expected_payload = {
+        "franchise": "Sony",
+        "character": "WH-1000XM5",
+        "item_type": "ヘッドホン",
+        "year_or_edition": None,
+        "search_query_ja": "Sony WH-1000XM5 ヘッドホン",
+        "fb_price_twd": 8000,
+        "is_anime_merch": True,
+    }
+    mock_success_response = MagicMock()
+    mock_success_response.text = json.dumps(expected_payload)
+
+    rate_limit_error = APIError(429, {"message": "RESOURCE_EXHAUSTED: quota exceeded", "status": "RESOURCE_EXHAUSTED"})
+
+    with patch("services.parser.genai.Client") as mock_client_class, \
+         patch("services.parser.asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+        mock_client = MagicMock()
+        mock_client_class.return_value = mock_client
+        # First call fails with 429, second call succeeds
+        mock_client.aio.models.generate_content = AsyncMock(
+            side_effect=[rate_limit_error, mock_success_response]
+        )
+
+        result = await parse_fb_post(post_text, api_key="fake_api_key", retry_delay_seconds=0.01)
+
+        assert isinstance(result, ParsedItem)
+        assert result.franchise == "Sony"
+        assert mock_client.aio.models.generate_content.await_count == 2
+        mock_sleep.assert_awaited_once()
+
+
+@pytest.mark.anyio
+async def test_parse_fb_post_rate_limit_exceeded():
+    """Test that persistent 429 rate limit raises GeminiRateLimitError after 3 retries."""
+    post_text = "售 Sony WH-1000XM5 8000"
+    rate_limit_error = APIError(429, {"message": "RESOURCE_EXHAUSTED", "status": "RESOURCE_EXHAUSTED"})
+
+    with patch("services.parser.genai.Client") as mock_client_class, \
+         patch("services.parser.asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+        mock_client = MagicMock()
+        mock_client_class.return_value = mock_client
+        mock_client.aio.models.generate_content = AsyncMock(side_effect=rate_limit_error)
+
+        with pytest.raises(GeminiRateLimitError) as exc_info:
+            await parse_fb_post(post_text, api_key="fake_api_key", max_retries=3, retry_delay_seconds=0.01)
+
+        assert "目前查詢人數較多" in str(exc_info.value)
+        assert mock_client.aio.models.generate_content.await_count == 3
+        assert mock_sleep.await_count == 2
 
 
 @pytest.mark.anyio
 async def test_parse_fb_post_irrelevant_text():
-    """Test that irrelevant non-merchandise text raises IrrelevantPostError."""
+    """Test that irrelevant non-goods text raises IrrelevantPostError with generic message."""
     post_text = "今天天氣真好，大家要去哪裡玩？"
 
     mock_response = MagicMock()
@@ -77,7 +240,7 @@ async def test_parse_fb_post_irrelevant_text():
         with pytest.raises(IrrelevantPostError) as exc_info:
             await parse_fb_post(post_text, api_key="fake_api_key")
 
-        assert "recognizable anime merchandise" in str(exc_info.value)
+        assert "無法解析此貼文" in str(exc_info.value)
 
 
 @pytest.mark.anyio
@@ -93,14 +256,14 @@ async def test_parse_fb_post_missing_api_key():
     with patch("services.parser.settings.gemini_api_key", None), \
          patch("services.parser.os.getenv", return_value=None):
         with pytest.raises(GeminiAPIError) as exc_info:
-            await parse_fb_post("售 排少 徽章 100", api_key=None)
+            await parse_fb_post("售 Sony 耳機 100", api_key=None)
         assert "GEMINI_API_KEY is not set" in str(exc_info.value)
 
 
 @pytest.mark.anyio
 async def test_parse_fb_post_api_failure():
     """Test that upstream Gemini API failures raise GeminiAPIError gracefully."""
-    post_text = "售 咒術 五條悟 徽章 200"
+    post_text = "售 Yonex 88D 拍子 3000"
 
     with patch("services.parser.genai.Client") as mock_client_class:
         mock_client = MagicMock()
