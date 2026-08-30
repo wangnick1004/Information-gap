@@ -79,6 +79,20 @@ DEFAULT_HEADERS = {
 BUYEE_MERCARI_BASE_URL = "https://buyee.jp/mercari/search"
 
 
+def normalize_search_keyword(keyword: Optional[str]) -> str:
+    """
+    Normalize Japanese / English search keywords for consistent marketplace queries:
+    1. Replace continuous whitespace (including full-width Japanese spaces '\\u3000', tabs, and newlines)
+       with a single half-width space using regex.
+    2. Convert all English/ASCII characters to uppercase consistently.
+    3. Strip leading and trailing whitespace.
+    """
+    if not keyword:
+        return ""
+    cleaned = re.sub(r"[\s\u3000]+", " ", str(keyword))
+    return cleaned.upper().strip()
+
+
 def extract_price_number(text: str) -> Optional[float]:
     """Extract numeric JPY price from text like '¥1,500', '1500円', '2,300 JPY'."""
     if not text:
@@ -222,7 +236,7 @@ async def scrape_buyee_prices(
         ScrapingBlockedError: When the target site returns anti-bot challenge (e.g. 202/403).
         ScrapingError: When no listings are found or general scraping errors occur.
     """
-    clean_query = search_query_ja.strip() if search_query_ja else ""
+    clean_query = normalize_search_keyword(search_query_ja)
     if not clean_query:
         raise ScrapingError("Search query cannot be empty.")
 

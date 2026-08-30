@@ -14,6 +14,7 @@ from linebot.v3.messaging import (
     FlexContainer,
     FlexMessage,
     ReplyMessageRequest,
+    ShowLoadingAnimationRequest,
     TextMessage,
 )
 from linebot.v3.webhook import WebhookParser
@@ -30,6 +31,7 @@ FlexSendMessage = FlexMessage
 from services.parser import (
     GeminiAPIError,
     GeminiRateLimitError,
+    GeminiServerError,
     IrrelevantPostError,
     ParsedItem,
     parse_fb_post,
@@ -132,6 +134,20 @@ async def handle_line_events(events: list, access_token: str) -> None:
                 # Unsupported message type (stickers, audio, etc.)
                 continue
 
+            # Step 0: Trigger LINE Loading Animation (typing indicator for user)
+            user_id = getattr(event.source, "user_id", None)
+            if user_id:
+                try:
+                    await line_bot_api.show_loading_animation(
+                        ShowLoadingAnimationRequest(
+                            chat_id=user_id,
+                            loading_seconds=30,
+                        )
+                    )
+                    logger.debug(f"Triggered LINE loading animation for user {user_id}")
+                except Exception as anim_exc:
+                    logger.debug(f"Failed to show loading animation (non-critical): {anim_exc}")
+
             parsed_item: Optional[ParsedItem] = None
 
             try:
@@ -158,6 +174,9 @@ async def handle_line_events(events: list, access_token: str) -> None:
                     pricing_result=pricing_result,
                     scraper_result=scraper_result,
                     affiliate_id=settings.buyee_affiliate_id,
+                    affiliate_base_url=settings.affiliate_base_url,
+                    shopee_affiliate_base_url=settings.shopee_affiliate_base_url,
+                    taobao_affiliate_base_url=settings.taobao_affiliate_base_url,
                 )
                 flex_container = FlexContainer.from_dict(flex_dict)
                 alt_text = f"【比價分析】{parsed_item.franchise} {parsed_item.character}".strip()
@@ -186,10 +205,14 @@ async def handle_line_events(events: list, access_token: str) -> None:
                 if parsed_item and exc.search_url:
                     item_title = f"{parsed_item.franchise} {parsed_item.character}".strip()
                     keyword_flex_dict = build_keyword_flex_message(
-                        japanese_keyword=parsed_item.search_query_ja,
+                        japanese_keyword=parsed_item.keyword_jp or parsed_item.search_query_ja,
                         search_url=exc.search_url,
                         affiliate_id=settings.buyee_affiliate_id,
                         item_title=item_title,
+                        affiliate_base_url=settings.affiliate_base_url,
+                        keyword_zh=parsed_item.keyword_zh,
+                        shopee_affiliate_base_url=settings.shopee_affiliate_base_url,
+                        taobao_affiliate_base_url=settings.taobao_affiliate_base_url,
                     )
                     flex_container = FlexContainer.from_dict(keyword_flex_dict)
                     reply_msg = FlexSendMessage(
@@ -211,9 +234,22 @@ async def handle_line_events(events: list, access_token: str) -> None:
                         )
                     )
 
+            except GeminiServerError as exc:
+                logger.warning(f"Gemini server error (503 UNAVAILABLE): {exc}")
+                fallback_text = str(exc) if str(exc) else "目前 AI 伺服器大塞車，請稍等一兩分鐘後再試一次喔！"
+                try:
+                    await line_bot_api.reply_message(
+                        ReplyMessageRequest(
+                            reply_token=event.reply_token,
+                            messages=[TextMessage(text=fallback_text)],
+                        )
+                    )
+                except Exception as reply_exc:
+                    logger.error(f"Failed to send server error fallback reply: {reply_exc}", exc_info=True)
+
             except GeminiRateLimitError as exc:
                 logger.warning(f"Gemini rate limit exceeded: {exc}")
-                fallback_text = "目前查詢人數較多，請稍後再試！"
+                fallback_text = str(exc) if str(exc) else "目前查詢人數較多，請稍後再試！"
                 try:
                     await line_bot_api.reply_message(
                         ReplyMessageRequest(

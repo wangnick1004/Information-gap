@@ -10,6 +10,7 @@ from services.scraper import (
     ScrapingResult,
     ScrapingTimeoutError,
     extract_price_number,
+    normalize_search_keyword,
     parse_buyee_html,
     scrape_buyee_prices,
 )
@@ -79,6 +80,16 @@ NO_RESULTS_HTML = """
 </body>
 </html>
 """
+
+
+def test_normalize_search_keyword():
+    """Test keyword normalization with uppercase English, continuous whitespace, and full-width Japanese spaces."""
+    assert normalize_search_keyword("  sony   wh-1000xm5\u3000\u3000ヘッドホン  ") == "SONY WH-1000XM5 ヘッドホン"
+    assert normalize_search_keyword("ハイキュー!!\u3000影山飛雄\t\tもちマス 2020") == "ハイキュー!! 影山飛雄 もちマス 2020"
+    assert normalize_search_keyword("nike   air jordan 1   chicago") == "NIKE AIR JORDAN 1 CHICAGO"
+    assert normalize_search_keyword("") == ""
+    assert normalize_search_keyword("   \u3000\t  ") == ""
+    assert normalize_search_keyword(None) == ""
 
 
 def test_extract_price_number():

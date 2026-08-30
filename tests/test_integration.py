@@ -141,6 +141,94 @@ def test_end_to_end_pipeline_success(
         assert "ハイキュー" in sent_msg.alt_text
 
 
+@patch("main.AsyncApiClient")
+@patch("main.AsyncMessagingApi")
+@patch("main.scrape_buyee_prices")
+@patch("main.parse_fb_post")
+def test_end_to_end_pipeline_with_affiliate_base_url(
+    mock_parse_fb_post,
+    mock_scrape_buyee_prices,
+    mock_messaging_api_class,
+    mock_api_client_class,
+):
+    """Test webhook generates FlexMessage containing AFFILIATE_BASE_URL redirect action URI."""
+    mock_api = AsyncMock()
+    mock_messaging_api_class.return_value = mock_api
+
+    mock_parse_fb_post.return_value = ParsedItem(
+        franchise="Sony",
+        character="WH-1000XM5",
+        item_type="ヘッドホン",
+        search_query_ja="Sony WH-1000XM5 ヘッドホン",
+        fb_price_twd=8000,
+        is_anime_merch=True,
+    )
+
+    mock_scrape_buyee_prices.return_value = ScrapingResult(
+        query="Sony WH-1000XM5 ヘッドホン",
+        search_url="https://buyee.jp/mercari/search?keyword=Sony%20WH-1000XM5",
+        lowest_price_jpy=28000.0,
+        median_price_jpy=32000.0,
+        representative_image_url="https://static.mercdn.net/item/detail/orig/photos/sony.jpg",
+        sample_prices=[28000.0, 32000.0],
+        total_found=2,
+    )
+
+    secret = "secret_integration_test"
+    token = "token_integration_test"
+    post_text = "售 Sony WH-1000XM5 8000"
+    body_str = create_line_text_payload(post_text)
+    signature = generate_signature(secret, body_str)
+
+    aff_base = "https://affiliate.example.com/redirect"
+    shopee_aff_base = "https://affiliate.shopee.example.com/click"
+    taobao_aff_base = "https://affiliate.taobao.example.com/click"
+    with patch.object(settings, "line_channel_secret", secret), \
+         patch.object(settings, "line_channel_access_token", token), \
+         patch.object(settings, "buyee_affiliate_id", "aff_123"), \
+         patch.object(settings, "affiliate_base_url", aff_base), \
+         patch.object(settings, "shopee_affiliate_base_url", shopee_aff_base), \
+         patch.object(settings, "taobao_affiliate_base_url", taobao_aff_base):
+
+        response = client.post(
+            "/api/webhook",
+            content=body_str,
+            headers={
+                "Content-Type": "application/json",
+                "X-Line-Signature": signature,
+            },
+        )
+
+        assert response.status_code == 200
+        mock_api.reply_message.assert_awaited_once()
+        reply_request = mock_api.reply_message.call_args[0][0]
+        sent_msg = reply_request.messages[0]
+        assert isinstance(sent_msg, FlexMessage)
+
+        flex_dict = sent_msg.contents.to_dict()
+        buttons = [c for c in flex_dict["footer"]["contents"] if c.get("type") == "button"]
+        assert len(buttons) == 3
+
+        # Buyee Button
+        buyee_uri = buttons[0]["action"]["uri"]
+        assert buyee_uri.startswith("https://affiliate.example.com/redirect?t=")
+        assert "https%3A%2F%2Fbuyee.jp%2Fmercari%2Fsearch" in buyee_uri
+        assert "af%3Daff_123" in buyee_uri
+        assert buttons[0]["action"]["label"] == "前往 Buyee 尋寶"
+
+        # Shopee Button (with dynamic affiliate tracking redirect)
+        shopee_uri = buttons[1]["action"]["uri"]
+        assert shopee_uri.startswith("https://affiliate.shopee.example.com/click?t=")
+        assert "https%3A%2F%2Fshopee.tw%2Fsearch%3Fkeyword%3D" in shopee_uri
+        assert buttons[1]["action"]["label"] == "前往 蝦皮 搜尋"
+
+        # Taobao Button (with dynamic affiliate tracking redirect)
+        taobao_uri = buttons[2]["action"]["uri"]
+        assert taobao_uri.startswith("https://affiliate.taobao.example.com/click?t=")
+        assert "https%3A%2F%2Fs.taobao.com%2Fsearch%3Fq%3D" in taobao_uri
+        assert buttons[2]["action"]["label"] == "前往 淘寶 搜尋"
+
+
 @patch("main.AsyncMessagingApiBlob")
 @patch("main.AsyncApiClient")
 @patch("main.AsyncMessagingApi")
@@ -200,6 +288,7 @@ def test_end_to_end_image_message_success(
         assert response.status_code == 200
         mock_blob_api.get_message_content.assert_awaited_once_with("img_12345")
         mock_parse_fb_post.assert_awaited_once_with(post_text=None, image_data=b"fake_image_bytes_123")
+        mock_api.show_loading_animation.assert_awaited_once()
         mock_api.reply_message.assert_awaited_once()
 
 
@@ -235,7 +324,9 @@ def test_end_to_end_irrelevant_post_fallback(
 
         mock_genai_client = MagicMock()
         mock_genai_client_class.return_value = mock_genai_client
-        mock_genai_client.aio.models.generate_content = AsyncMock(return_value=mock_gemini_resp)
+        mock_chat = MagicMock()
+        mock_genai_client.aio.chats.create.return_value = mock_chat
+        mock_chat.send_message = AsyncMock(return_value=mock_gemini_resp)
 
         response = client.post(
             "/api/webhook",
@@ -358,6 +449,47 @@ def test_end_to_end_scraper_error_fallback(
         sent_msg = reply_request.messages[0]
         assert isinstance(sent_msg, FlexMessage)
         assert "比價成功，來去撈便宜～" in sent_msg.alt_text
+
+
+@patch("main.AsyncApiClient")
+@patch("main.AsyncMessagingApi")
+@patch("main.parse_fb_post")
+def test_end_to_end_gemini_server_error_fallback(
+    mock_parse_fb_post,
+    mock_messaging_api_class,
+    mock_api_client_class,
+):
+    """Test webhook graceful reply when Gemini API 503 ServerError persists after retries."""
+    from services.parser import GeminiServerError
+
+    mock_api = AsyncMock()
+    mock_messaging_api_class.return_value = mock_api
+
+    mock_parse_fb_post.side_effect = GeminiServerError("目前 AI 伺服器大塞車，請稍等一兩分鐘後再試一次喔！")
+
+    secret = "secret_integration_test"
+    token = "token_integration_test"
+    body_str = create_line_text_payload("售 Sony WH-1000XM5 8000")
+    signature = generate_signature(secret, body_str)
+
+    with patch.object(settings, "line_channel_secret", secret), \
+         patch.object(settings, "line_channel_access_token", token):
+
+        response = client.post(
+            "/api/webhook",
+            content=body_str,
+            headers={
+                "Content-Type": "application/json",
+                "X-Line-Signature": signature,
+            },
+        )
+
+        assert response.status_code == 200
+        mock_api.reply_message.assert_awaited_once()
+        reply_request = mock_api.reply_message.call_args[0][0]
+        sent_msg = reply_request.messages[0]
+        assert isinstance(sent_msg, TextMessage)
+        assert "目前 AI 伺服器大塞車，請稍等一兩分鐘後再試一次喔！" in sent_msg.text
 
 
 @patch("main.AsyncApiClient")

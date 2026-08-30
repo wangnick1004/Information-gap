@@ -1,10 +1,12 @@
 import logging
+import os
 import urllib.parse
 from typing import Any, Dict, Optional
 
+from config import settings
 from services.parser import ParsedAnimeItem, ParsedItem
 from services.pricing import PricingResult
-from services.scraper import ScrapingResult
+from services.scraper import ScrapingResult, normalize_search_keyword
 
 logger = logging.getLogger("line_bot.flex_builder")
 
@@ -12,30 +14,109 @@ DEFAULT_PLACEHOLDER_IMAGE = (
     "https://images.unsplash.com/photo-1578632767115-351597cf2477?w=600&auto=format&fit=crop&q=80"
 )
 
-BUYEE_GREEN_COLOR = "#06C755"  # LINE / Buyee standard vibrant green
+BUYEE_GREEN_COLOR = "#06C755"        # LINE / Buyee standard vibrant green
+SHOPEE_ORANGE_COLOR = "#EE4D2D"      # Shopee official vibrant orange
+TAOBAO_RED_ORANGE_COLOR = "#FF5000"  # Taobao official warm red-orange
+
+SHOPEE_SEARCH_BASE_URL = "https://shopee.tw/search"
+TAOBAO_SEARCH_BASE_URL = "https://s.taobao.com/search"
 
 
-def append_affiliate_id(url: str, affiliate_id: Optional[str]) -> str:
-    """Append affiliate tracking ID to the destination URL."""
+def build_shopee_search_url(
+    keyword_zh: str,
+    shopee_affiliate_base_url: Optional[str] = None,
+) -> str:
+    """
+    Construct Shopee Taiwan search URL for the given Traditional Chinese keyword.
+    If shopee_affiliate_base_url is provided (or configured in environment/settings),
+    wraps the target Shopee search URL with URL-encoding into the redirect tracking format:
+    '{shopee_affiliate_base_url}?t={url_encoded_shopee_search_url}'.
+    """
+    clean_keyword = normalize_search_keyword(keyword_zh)
+    encoded = urllib.parse.quote(clean_keyword)
+    base_search_url = f"{SHOPEE_SEARCH_BASE_URL}?keyword={encoded}"
+
+    redirect_base = (
+        shopee_affiliate_base_url
+        or getattr(settings, "shopee_affiliate_base_url", None)
+        or os.getenv("SHOPEE_AFFILIATE_BASE_URL")
+    )
+    if redirect_base and redirect_base.strip():
+        base_clean = redirect_base.strip()
+        encoded_target = urllib.parse.quote(base_search_url, safe="")
+        separator = "&" if "?" in base_clean else "?"
+        return f"{base_clean}{separator}t={encoded_target}"
+
+    return base_search_url
+
+
+def build_taobao_search_url(
+    keyword_zh: str,
+    taobao_affiliate_base_url: Optional[str] = None,
+) -> str:
+    """
+    Construct Taobao search URL for the given Traditional Chinese keyword.
+    If taobao_affiliate_base_url is provided (or configured in environment/settings),
+    wraps the target Taobao search URL with URL-encoding into the redirect tracking format:
+    '{taobao_affiliate_base_url}?t={url_encoded_taobao_search_url}'.
+    """
+    clean_keyword = normalize_search_keyword(keyword_zh)
+    encoded = urllib.parse.quote(clean_keyword)
+    base_search_url = f"{TAOBAO_SEARCH_BASE_URL}?q={encoded}"
+
+    redirect_base = (
+        taobao_affiliate_base_url
+        or getattr(settings, "taobao_affiliate_base_url", None)
+        or os.getenv("TAOBAO_AFFILIATE_BASE_URL")
+    )
+    if redirect_base and redirect_base.strip():
+        base_clean = redirect_base.strip()
+        encoded_target = urllib.parse.quote(base_search_url, safe="")
+        separator = "&" if "?" in base_clean else "?"
+        return f"{base_clean}{separator}t={encoded_target}"
+
+    return base_search_url
+
+
+def append_affiliate_id(
+    url: str,
+    affiliate_id: Optional[str] = None,
+    affiliate_base_url: Optional[str] = None,
+) -> str:
+    """
+    Construct the final destination URL with affiliate tracking:
+    1. If affiliate_id is provided, appends 'af={affiliate_id}' to the Buyee search URL.
+    2. If affiliate_base_url is provided (or configured in environment/settings),
+       wraps the target Buyee URL with URL-encoding into the redirect tracking format:
+       '{affiliate_base_url}?t={url_encoded_buyee_url}'.
+    """
     if not url:
         return url
-    if not affiliate_id or not affiliate_id.strip():
-        return url
 
-    parsed = urllib.parse.urlparse(url)
-    query_params = urllib.parse.parse_qs(parsed.query)
-    # Buyee affiliate parameter
-    query_params["af"] = [affiliate_id.strip()]
-    new_query = urllib.parse.urlencode(query_params, doseq=True)
+    target_url = url
+    if affiliate_id and affiliate_id.strip():
+        parsed = urllib.parse.urlparse(target_url)
+        query_params = urllib.parse.parse_qs(parsed.query)
+        # Buyee affiliate parameter
+        query_params["af"] = [affiliate_id.strip()]
+        new_query = urllib.parse.urlencode(query_params, doseq=True)
+        target_url = urllib.parse.urlunparse((
+            parsed.scheme,
+            parsed.netloc,
+            parsed.path,
+            parsed.params,
+            new_query,
+            parsed.fragment,
+        ))
 
-    return urllib.parse.urlunparse((
-        parsed.scheme,
-        parsed.netloc,
-        parsed.path,
-        parsed.params,
-        new_query,
-        parsed.fragment,
-    ))
+    base_redirect_url = affiliate_base_url or getattr(settings, "affiliate_base_url", None) or os.getenv("AFFILIATE_BASE_URL")
+    if base_redirect_url and base_redirect_url.strip():
+        base_clean = base_redirect_url.strip()
+        encoded_target = urllib.parse.quote(target_url, safe="")
+        separator = "&" if "?" in base_clean else "?"
+        return f"{base_clean}{separator}t={encoded_target}"
+
+    return target_url
 
 
 def build_keyword_flex_message(
@@ -43,26 +124,38 @@ def build_keyword_flex_message(
     search_url: str,
     affiliate_id: Optional[str] = None,
     item_title: Optional[str] = None,
+    affiliate_base_url: Optional[str] = None,
+    keyword_zh: Optional[str] = None,
+    shopee_affiliate_base_url: Optional[str] = None,
+    taobao_affiliate_base_url: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
-    Construct a LINE Flex Message bubble for generated Japanese search keywords.
+    Construct a LINE Flex Message bubble for generated Japanese search keywords with 3 marketplace buttons.
 
     Structure:
-    - Header: Text indicating success, "🎯 日拍關鍵字生成成功！" (Bold).
+    - Header: Text indicating success, "比價成功，來去撈便宜～" (Bold).
     - Body: Displays "搜尋關鍵字：\n{japanese_keyword}" prominently.
-    - Footer: Primary style (green) button with text "前往 Buyee 尋寶" pointing to Buyee search URL.
+    - Footer: 3 primary buttons (Buyee green, Shopee orange, Taobao red-orange).
 
     Args:
         japanese_keyword: The generated Japanese search query string.
         search_url: The direct search URL to Buyee.
         affiliate_id: Optional affiliate tracking ID.
         item_title: Optional item title or brand description.
+        affiliate_base_url: Optional affiliate tracking base URL redirect endpoint.
+        keyword_zh: Optional Traditional Chinese keyword for Shopee and Taobao.
+        shopee_affiliate_base_url: Optional Shopee affiliate tracking base URL redirect endpoint.
+        taobao_affiliate_base_url: Optional Taobao affiliate tracking base URL redirect endpoint.
 
     Returns:
         Dict[str, Any]: LINE Flex Bubble JSON dictionary.
     """
-    clean_keyword = japanese_keyword.strip() if japanese_keyword else "商品搜尋"
-    final_buyee_url = append_affiliate_id(search_url, affiliate_id)
+    clean_keyword = normalize_search_keyword(japanese_keyword) or "商品搜尋"
+    final_buyee_url = append_affiliate_id(search_url, affiliate_id=affiliate_id, affiliate_base_url=affiliate_base_url)
+
+    zh_kw = normalize_search_keyword(keyword_zh) if keyword_zh else (item_title or clean_keyword)
+    shopee_url = build_shopee_search_url(zh_kw, shopee_affiliate_base_url=shopee_affiliate_base_url)
+    taobao_url = build_taobao_search_url(zh_kw, taobao_affiliate_base_url=taobao_affiliate_base_url)
 
     body_contents = [
         {
@@ -89,6 +182,16 @@ def build_keyword_flex_message(
             "color": "#888888",
             "wrap": True,
             "margin": "md",
+        })
+
+    if keyword_zh and keyword_zh.strip() and normalize_search_keyword(keyword_zh) != clean_keyword:
+        body_contents.append({
+            "type": "text",
+            "text": f"中文關鍵字：{normalize_search_keyword(keyword_zh)}",
+            "size": "xs",
+            "color": "#888888",
+            "wrap": True,
+            "margin": "xs",
         })
 
     bubble: Dict[str, Any] = {
@@ -126,12 +229,35 @@ def build_keyword_flex_message(
                     "type": "button",
                     "style": "primary",
                     "color": BUYEE_GREEN_COLOR,
+                    "height": "sm",
                     "action": {
                         "type": "uri",
                         "label": "前往 Buyee 尋寶",
                         "uri": final_buyee_url,
                     },
-                }
+                },
+                {
+                    "type": "button",
+                    "style": "primary",
+                    "color": SHOPEE_ORANGE_COLOR,
+                    "height": "sm",
+                    "action": {
+                        "type": "uri",
+                        "label": "前往 蝦皮 搜尋",
+                        "uri": shopee_url,
+                    },
+                },
+                {
+                    "type": "button",
+                    "style": "primary",
+                    "color": TAOBAO_RED_ORANGE_COLOR,
+                    "height": "sm",
+                    "action": {
+                        "type": "uri",
+                        "label": "前往 淘寶 搜尋",
+                        "uri": taobao_url,
+                    },
+                },
             ],
         },
     }
@@ -148,6 +274,9 @@ def build_price_comparison_flex(
     pricing_result: PricingResult,
     scraper_result: ScrapingResult,
     affiliate_id: Optional[str] = None,
+    affiliate_base_url: Optional[str] = None,
+    shopee_affiliate_base_url: Optional[str] = None,
+    taobao_affiliate_base_url: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Construct a rich LINE Flex Message (Bubble Container) comparing FB and Japanese market prices.
@@ -157,12 +286,24 @@ def build_price_comparison_flex(
         pricing_result: Landed cost calculation and markup analysis.
         scraper_result: Scraped JPY prices and representative image.
         affiliate_id: Optional affiliate tracking ID.
+        affiliate_base_url: Optional affiliate tracking base URL redirect endpoint.
+        shopee_affiliate_base_url: Optional Shopee affiliate tracking base URL redirect endpoint.
+        taobao_affiliate_base_url: Optional Taobao affiliate tracking base URL redirect endpoint.
 
     Returns:
         Dict[str, Any]: LINE Messaging API compatible Flex Bubble structure.
     """
     image_url = scraper_result.representative_image_url or DEFAULT_PLACEHOLDER_IMAGE
-    final_buyee_url = append_affiliate_id(scraper_result.search_url, affiliate_id)
+    final_buyee_url = append_affiliate_id(scraper_result.search_url, affiliate_id=affiliate_id, affiliate_base_url=affiliate_base_url)
+
+    shopee_kw = (
+        parsed_item.keyword_zh
+        or f"{parsed_item.franchise} {parsed_item.character}".strip()
+        or parsed_item.keyword_jp
+        or parsed_item.search_query_ja
+    )
+    shopee_url = build_shopee_search_url(shopee_kw, shopee_affiliate_base_url=shopee_affiliate_base_url)
+    taobao_url = build_taobao_search_url(shopee_kw, taobao_affiliate_base_url=taobao_affiliate_base_url)
 
     # Format values for display
     fb_price_str = (
@@ -228,7 +369,7 @@ def build_price_comparison_flex(
             "contents": [
                 {
                     "type": "text",
-                    "text": f"搜尋關鍵字：\n{parsed_item.search_query_ja}",
+                    "text": f"搜尋關鍵字：\n{parsed_item.keyword_jp or parsed_item.search_query_ja}",
                     "weight": "bold",
                     "size": "md",
                     "wrap": True,
@@ -291,6 +432,7 @@ def build_price_comparison_flex(
                                     "size": "sm",
                                     "color": "#555555",
                                     "flex": 4,
+                                    "align": "start",
                                 },
                                 {
                                     "type": "text",
@@ -315,6 +457,7 @@ def build_price_comparison_flex(
                                     "color": "#111111",
                                     "weight": "bold",
                                     "flex": 4,
+                                    "align": "start",
                                 },
                                 {
                                     "type": "text",
@@ -338,6 +481,7 @@ def build_price_comparison_flex(
                                     "size": "xs",
                                     "color": "#888888",
                                     "flex": 4,
+                                    "align": "start",
                                 },
                                 {
                                     "type": "text",
@@ -371,10 +515,33 @@ def build_price_comparison_flex(
                     "type": "button",
                     "style": "primary",
                     "color": BUYEE_GREEN_COLOR,
+                    "height": "sm",
                     "action": {
                         "type": "uri",
                         "label": "前往 Buyee 尋寶",
                         "uri": final_buyee_url,
+                    },
+                },
+                {
+                    "type": "button",
+                    "style": "primary",
+                    "color": SHOPEE_ORANGE_COLOR,
+                    "height": "sm",
+                    "action": {
+                        "type": "uri",
+                        "label": "前往 蝦皮 搜尋",
+                        "uri": shopee_url,
+                    },
+                },
+                {
+                    "type": "button",
+                    "style": "primary",
+                    "color": TAOBAO_RED_ORANGE_COLOR,
+                    "height": "sm",
+                    "action": {
+                        "type": "uri",
+                        "label": "前往 淘寶 搜尋",
+                        "uri": taobao_url,
                     },
                 },
                 {
@@ -383,6 +550,7 @@ def build_price_comparison_flex(
                     "size": "xxs",
                     "color": "#CCCCCC",
                     "align": "center",
+                    "margin": "xs",
                 },
             ],
         },
