@@ -107,17 +107,19 @@ def test_build_shopee_search_url_with_affiliate_base_url():
 def test_build_taobao_search_url():
     """Test Taobao search URL construction with URL encoding."""
     url = build_taobao_search_url("排球少年 影山飛雄 趴娃 2020")
-    assert url.startswith("https://ai.taobao.com/search/index.htm?key=")
+    assert url.startswith("https://world.taobao.com/search/search.htm?q=")
     assert "%E6%8E%92%E7%90%83%E5%B0%91%E5%B9%B4" in url  # '排球少年' url-encoded
 
 
 def test_build_taobao_search_url_with_affiliate_base_url():
-    """Test Taobao search URL wrapped with TAOBAO_AFFILIATE_BASE_URL redirect tracking."""
+    """Test Taobao search URL wrapped with TAOBAO_AFFILIATE_BASE_URL redirect tracking (single URL-encoded)."""
     taobao_base = "https://affiliate.taobao.com/redirect"
     url = build_taobao_search_url("排球少年 影山飛雄 趴娃 2020", taobao_affiliate_base_url=taobao_base)
     assert url.startswith("https://affiliate.taobao.com/redirect?t=")
-    # Target URL should be fully URL-encoded
-    assert "https%3A%2F%2Fai.taobao.com%2Fsearch%2Findex.htm%3Fkey%3D" in url
+    # Target URL should be single URL-encoded (showing %20 for spaces, not %2520)
+    assert "https%3A%2F%2Fworld.taobao.com%2Fsearch%2Fsearch.htm%3Fq%3D" in url
+    assert "%20" in url
+    assert "%2520" not in url
 
 
 def test_build_yahoo_tw_search_url():
@@ -187,7 +189,7 @@ def test_build_keyword_flex_message():
 
     assert card2_buttons[1]["action"]["label"] == "前往 淘寶"
     assert card2_buttons[1]["color"] == "#FF5000"
-    assert "ai.taobao.com/search/index.htm?key=" in card2_buttons[1]["action"]["uri"]
+    assert "world.taobao.com/search/search.htm?q=" in card2_buttons[1]["action"]["uri"]
 
     assert card2_buttons[2]["action"]["label"] == "前往 台灣 Yahoo"
     assert card2_buttons[2]["color"] == "#6001D2"
@@ -271,7 +273,7 @@ def test_build_price_comparison_flex_overpriced():
 
     assert card2_buttons[1]["action"]["label"] == "前往 淘寶"
     assert card2_buttons[1]["color"] == "#FF5000"
-    assert "ai.taobao.com/search/index.htm?key=" in card2_buttons[1]["action"]["uri"]
+    assert "world.taobao.com/search/search.htm?q=" in card2_buttons[1]["action"]["uri"]
 
     assert card2_buttons[2]["action"]["label"] == "前往 台灣 Yahoo"
     assert card2_buttons[2]["color"] == "#6001D2"
@@ -415,7 +417,9 @@ def test_build_price_comparison_flex_with_affiliate_base_url():
     assert "https%3A%2F%2Fshopee.tw%2Fsearch%3Fkeyword%3D" in shopee_btn_uri
 
     assert taobao_btn_uri.startswith("https://track.taobao-affiliate.com/redirect?t=")
-    assert "https%3A%2F%2Fai.taobao.com%2Fsearch%2Findex.htm%3Fkey%3D" in taobao_btn_uri
+    assert "https%3A%2F%2Fworld.taobao.com%2Fsearch%2Fsearch.htm%3Fq%3D" in taobao_btn_uri
+    assert "%20" in taobao_btn_uri
+    assert "%2520" not in taobao_btn_uri
 
     assert yahoo_tw_btn_uri.startswith("https://track.yahoo-tw-affiliate.com/redirect?t=")
     assert "https%3A%2F%2Ftw.buy.yahoo.com%2Fsearch%2Fproduct%3Fp%3D" in yahoo_tw_btn_uri

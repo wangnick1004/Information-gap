@@ -20,8 +20,9 @@ from services.parser import (
 
 def test_compress_and_resize_image():
     """Test image resizing to 800px bounding box and JPEG compression."""
+    # 1. Test with large RGBA image (transparency conversion to RGB)
     large_img = Image.new("RGBA", (2000, 1500), color=(255, 0, 0, 128))
-    comp_bytes, mime = compress_and_resize_image(large_img, max_dimension=800, quality=80)
+    comp_bytes, mime = compress_and_resize_image(large_img, max_dimension=800, quality=85)
     assert mime == "image/jpeg"
     assert len(comp_bytes) > 0
 
@@ -29,6 +30,20 @@ def test_compress_and_resize_image():
     assert out_img.width == 800
     assert out_img.height == 600
     assert out_img.mode == "RGB"
+
+    # 2. Test with raw bytes input (simulating LINE API download)
+    raw_buf = io.BytesIO()
+    Image.new("RGBA", (1600, 1200), color="blue").save(raw_buf, format="PNG")
+    raw_bytes = raw_buf.getvalue()
+
+    comp_bytes_from_raw, mime_from_raw = compress_and_resize_image(raw_bytes, max_dimension=800, quality=85)
+    assert mime_from_raw == "image/jpeg"
+    assert len(comp_bytes_from_raw) < len(raw_bytes)
+
+    out_from_raw = Image.open(io.BytesIO(comp_bytes_from_raw))
+    assert out_from_raw.width == 800
+    assert out_from_raw.height == 600
+    assert out_from_raw.mode == "RGB"
 
 
 def test_resolve_model_name():

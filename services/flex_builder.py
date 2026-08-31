@@ -30,7 +30,7 @@ BUYEE_MERCARI_SEARCH_BASE_URL = "https://buyee.jp/mercari/search"
 BUYEE_YAHOO_SEARCH_BASE_URL = "https://buyee.jp/item/search/query"
 BUYEE_RAKUTEN_SEARCH_BASE_URL = "https://buyee.jp/rakuten/shopping/search/category/0"
 SHOPEE_SEARCH_BASE_URL = "https://shopee.tw/search"
-TAOBAO_SEARCH_BASE_URL = "https://ai.taobao.com/search/index.htm"
+TAOBAO_SEARCH_BASE_URL = "https://world.taobao.com/search/search.htm"
 YAHOO_TW_SEARCH_BASE_URL = "https://tw.buy.yahoo.com/search/product"
 
 
@@ -117,15 +117,14 @@ def build_taobao_search_url(
     taobao_affiliate_base_url: Optional[str] = None,
 ) -> str:
     """
-    Construct Ai Taobao (affiliate-friendly) search URL for the given Traditional Chinese keyword.
-    Base format: https://ai.taobao.com/search/index.htm?key=<keyword_zh>
+    Construct Global Taobao search URL for the given Traditional Chinese keyword.
+    Base format: https://world.taobao.com/search/search.htm?q=<keyword_zh>
     If taobao_affiliate_base_url is provided (or configured in environment/settings),
-    wraps the target Ai Taobao search URL with URL-encoding into the redirect tracking format:
+    wraps the target Global Taobao search URL with single URL-encoding into the redirect tracking format:
     '{taobao_affiliate_base_url}?t={url_encoded_taobao_search_url}'.
     """
     clean_keyword = normalize_search_keyword(keyword_zh)
-    encoded = urllib.parse.quote(clean_keyword)
-    base_search_url = f"{TAOBAO_SEARCH_BASE_URL}?key={encoded}"
+    raw_target_url = f"{TAOBAO_SEARCH_BASE_URL}?q={clean_keyword}"
 
     redirect_base = (
         taobao_affiliate_base_url
@@ -134,11 +133,13 @@ def build_taobao_search_url(
     )
     if redirect_base and redirect_base.strip():
         base_clean = redirect_base.strip()
-        encoded_target = urllib.parse.quote(base_search_url, safe="")
+        # Single URL-encoding applied to the entire raw target base URL without pre-encoding keyword_zh
+        encoded_target = urllib.parse.quote(raw_target_url, safe="")
         separator = "&" if "?" in base_clean else "?"
         return f"{base_clean}{separator}t={encoded_target}"
 
-    return base_search_url
+    encoded = urllib.parse.quote(clean_keyword)
+    return f"{TAOBAO_SEARCH_BASE_URL}?q={encoded}"
 
 
 def build_yahoo_tw_search_url(
