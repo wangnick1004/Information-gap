@@ -68,6 +68,13 @@ def test_build_buyee_rakuten_search_url():
     assert "Sony" in url or "SONY" in url
     assert "%E3%83%98%E3%83%83%E3%83%89%E3%83%9B%E3%83%B3" in url
 
+    # Test alphanumeric space removal: Switch 2 -> SWITCH2, PS 5 -> PS5
+    url_switch = build_buyee_rakuten_search_url("Switch 2")
+    assert url_switch == "https://buyee.jp/rakuten/shopping/search/category/0?query=SWITCH2"
+
+    url_ps5 = build_buyee_rakuten_search_url("PS 5 Pro")
+    assert url_ps5 == "https://buyee.jp/rakuten/shopping/search/category/0?query=PS5%20PRO"
+
 
 def test_build_buyee_rakuten_search_url_with_affiliate_base_url():
     """Test Rakuten Japan search URL wrapped with AFFILIATE_BASE_URL redirect tracking."""

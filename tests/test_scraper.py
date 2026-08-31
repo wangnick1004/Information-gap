@@ -10,6 +10,7 @@ from services.scraper import (
     ScrapingResult,
     ScrapingTimeoutError,
     extract_price_number,
+    normalize_rakuten_search_keyword,
     normalize_search_keyword,
     parse_buyee_html,
     scrape_buyee_prices,
@@ -193,3 +194,15 @@ async def test_scrape_buyee_prices_empty_query():
     with pytest.raises(ScrapingError) as exc_info:
         await scrape_buyee_prices("   ")
     assert "Search query cannot be empty" in str(exc_info.value)
+
+
+def test_normalize_rakuten_search_keyword():
+    """Test alphanumeric space removal specifically for Rakuten Japan keywords."""
+    assert normalize_rakuten_search_keyword("Switch 2") == "SWITCH2"
+    assert normalize_rakuten_search_keyword("PS 5") == "PS5"
+    assert normalize_rakuten_search_keyword("iPhone 16 Pro") == "IPHONE16 PRO"
+    assert normalize_rakuten_search_keyword("Sony WH-1000XM5") == "SONY WH-1000XM5"
+    assert normalize_rakuten_search_keyword("Nintendo Switch 2 本體") == "NINTENDO SWITCH2 本體"
+    assert normalize_rakuten_search_keyword("") == ""
+    assert normalize_rakuten_search_keyword(None) == ""
+

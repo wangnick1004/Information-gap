@@ -93,6 +93,18 @@ def normalize_search_keyword(keyword: Optional[str]) -> str:
     return cleaned.upper().strip()
 
 
+def normalize_rakuten_search_keyword(keyword: Optional[str]) -> str:
+    """
+    Normalize Japanese / English search keywords specifically for Rakuten:
+    Removes spaces specifically between English letters and numbers (e.g. 'Switch 2' -> 'Switch2', 'PS 5' -> 'PS5'),
+    then standardizes whitespace and case.
+    """
+    if not keyword:
+        return ""
+    condensed = re.sub(r"(?i)([a-z])\s+(\d)", r"\1\2", str(keyword))
+    return normalize_search_keyword(condensed)
+
+
 def extract_price_number(text: str) -> Optional[float]:
     """Extract numeric JPY price from text like '¥1,500', '1500円', '2,300 JPY'."""
     if not text:

@@ -1,12 +1,17 @@
 import logging
 import os
+import re
 import urllib.parse
 from typing import Any, Dict, Optional
 
 from config import settings
 from services.parser import ParsedAnimeItem, ParsedItem
 from services.pricing import PricingResult
-from services.scraper import ScrapingResult, normalize_search_keyword
+from services.scraper import (
+    ScrapingResult,
+    normalize_rakuten_search_keyword,
+    normalize_search_keyword,
+)
 
 logger = logging.getLogger("line_bot.flex_builder")
 
@@ -58,13 +63,15 @@ def build_buyee_rakuten_search_url(
 ) -> str:
     """
     Construct Rakuten Japan search URL via Buyee for the given Japanese keyword.
+    Applies alphanumeric space removal (e.g., 'Switch 2' -> 'Switch2', 'PS 5' -> 'PS5')
+    exclusively for Rakuten search indexing.
     Base format: https://buyee.jp/rakuten/shopping/search/category/0?query=<keyword_jp>
     If affiliate_id is provided, appends 'af={affiliate_id}'.
     If affiliate_base_url is provided (or configured in environment/settings),
     wraps the target Rakuten search URL with URL-encoding into the redirect tracking format:
     '{affiliate_base_url}?t={url_encoded_buyee_rakuten_search_url}'.
     """
-    clean_keyword = normalize_search_keyword(keyword_jp)
+    clean_keyword = normalize_rakuten_search_keyword(keyword_jp)
     encoded_keyword = urllib.parse.quote(clean_keyword)
     base_search_url = f"{BUYEE_RAKUTEN_SEARCH_BASE_URL}?query={encoded_keyword}"
 
