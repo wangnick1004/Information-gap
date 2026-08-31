@@ -16,10 +16,13 @@ DEFAULT_PLACEHOLDER_IMAGE = (
 
 BUYEE_GREEN_COLOR = "#06C755"        # LINE / Buyee standard vibrant green
 YAHOO_AUCTIONS_COLOR = "#6F42C1"      # Yahoo! Japan Auctions distinctive purple
+RAKUTEN_RED_COLOR = "#BF0000"         # Rakuten Japan signature crimson red
 SHOPEE_ORANGE_COLOR = "#EE4D2D"      # Shopee official vibrant orange
 TAOBAO_RED_ORANGE_COLOR = "#FF5000"  # Taobao official warm red-orange
 
+BUYEE_MERCARI_SEARCH_BASE_URL = "https://buyee.jp/mercari/search"
 BUYEE_YAHOO_SEARCH_BASE_URL = "https://buyee.jp/item/search/query"
+BUYEE_RAKUTEN_SEARCH_BASE_URL = "https://buyee.jp/rakuten/search"
 SHOPEE_SEARCH_BASE_URL = "https://shopee.tw/search"
 TAOBAO_SEARCH_BASE_URL = "https://s.taobao.com/search"
 
@@ -40,6 +43,30 @@ def build_buyee_yahoo_search_url(
     clean_keyword = normalize_search_keyword(keyword_jp)
     encoded_keyword = urllib.parse.quote(clean_keyword)
     base_search_url = f"{BUYEE_YAHOO_SEARCH_BASE_URL}/{encoded_keyword}"
+
+    return append_affiliate_id(
+        base_search_url,
+        affiliate_id=affiliate_id,
+        affiliate_base_url=affiliate_base_url,
+    )
+
+
+def build_buyee_rakuten_search_url(
+    keyword_jp: str,
+    affiliate_id: Optional[str] = None,
+    affiliate_base_url: Optional[str] = None,
+) -> str:
+    """
+    Construct Rakuten Japan search URL via Buyee for the given Japanese keyword.
+    Base format: https://buyee.jp/rakuten/search?keyword=<keyword_jp>
+    If affiliate_id is provided, appends 'af={affiliate_id}'.
+    If affiliate_base_url is provided (or configured in environment/settings),
+    wraps the target Rakuten search URL with URL-encoding into the redirect tracking format:
+    '{affiliate_base_url}?t={url_encoded_buyee_rakuten_search_url}'.
+    """
+    clean_keyword = normalize_search_keyword(keyword_jp)
+    encoded_keyword = urllib.parse.quote(clean_keyword)
+    base_search_url = f"{BUYEE_RAKUTEN_SEARCH_BASE_URL}?keyword={encoded_keyword}"
 
     return append_affiliate_id(
         base_search_url,
@@ -154,103 +181,96 @@ def build_keyword_flex_message(
     keyword_zh: Optional[str] = None,
     shopee_affiliate_base_url: Optional[str] = None,
     taobao_affiliate_base_url: Optional[str] = None,
+    image_url: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
-    Construct a LINE Flex Message bubble for generated Japanese search keywords with 4 marketplace buttons.
-
-    Structure:
-    - Header: Text indicating success, "比價成功，來去撈便宜～" (Bold).
-    - Body: Displays "搜尋關鍵字：\n{japanese_keyword}" prominently.
-    - Footer: 4 primary buttons (Buyee Mercari green, Buyee Yahoo purple, Shopee orange, Taobao red-orange).
-
-    Args:
-        japanese_keyword: The generated Japanese search query string.
-        search_url: The direct search URL to Buyee.
-        affiliate_id: Optional affiliate tracking ID.
-        item_title: Optional item title or brand description.
-        affiliate_base_url: Optional affiliate tracking base URL redirect endpoint.
-        keyword_zh: Optional Traditional Chinese keyword for Shopee and Taobao.
-        shopee_affiliate_base_url: Optional Shopee affiliate tracking base URL redirect endpoint.
-        taobao_affiliate_base_url: Optional Taobao affiliate tracking base URL redirect endpoint.
-
-    Returns:
-        Dict[str, Any]: LINE Flex Bubble JSON dictionary.
+    Construct a LINE Flex Carousel containing 2 cards:
+    - Card 1 (Japan Focus): Buyee Mercari, Buyee Yahoo Auctions, Buyee Rakuten
+    - Card 2 (Greater China Focus): Shopee Taiwan, Taobao
     """
     clean_keyword = normalize_search_keyword(japanese_keyword) or "商品搜尋"
     final_buyee_url = append_affiliate_id(search_url, affiliate_id=affiliate_id, affiliate_base_url=affiliate_base_url)
     yahoo_url = build_buyee_yahoo_search_url(clean_keyword, affiliate_id=affiliate_id, affiliate_base_url=affiliate_base_url)
+    rakuten_url = build_buyee_rakuten_search_url(clean_keyword, affiliate_id=affiliate_id, affiliate_base_url=affiliate_base_url)
 
     zh_kw = normalize_search_keyword(keyword_zh) if keyword_zh else (item_title or clean_keyword)
     shopee_url = build_shopee_search_url(zh_kw, shopee_affiliate_base_url=shopee_affiliate_base_url)
     taobao_url = build_taobao_search_url(zh_kw, taobao_affiliate_base_url=taobao_affiliate_base_url)
 
-    body_contents = [
-        {
-            "type": "text",
-            "text": "搜尋關鍵字：",
-            "size": "sm",
-            "color": "#666666",
-        },
-        {
-            "type": "text",
-            "text": clean_keyword,
-            "weight": "bold",
-            "size": "xl",
-            "color": "#111111",
-            "wrap": True,
-        },
-    ]
+    hero_img = image_url or DEFAULT_PLACEHOLDER_IMAGE
 
-    if item_title and item_title.strip():
-        body_contents.append({
-            "type": "text",
-            "text": f"辨識商品：{item_title.strip()}",
-            "size": "xs",
-            "color": "#888888",
-            "wrap": True,
-            "margin": "md",
-        })
-
-    if keyword_zh and keyword_zh.strip() and normalize_search_keyword(keyword_zh) != clean_keyword:
-        body_contents.append({
-            "type": "text",
-            "text": f"中文關鍵字：{normalize_search_keyword(keyword_zh)}",
-            "size": "xs",
-            "color": "#888888",
-            "wrap": True,
-            "margin": "xs",
-        })
-
-    bubble: Dict[str, Any] = {
+    # Card 1: Japan Focus
+    card_japan: Dict[str, Any] = {
         "type": "bubble",
         "size": "mega",
         "header": {
             "type": "box",
             "layout": "vertical",
             "backgroundColor": "#F0FFF4",
-            "paddingAll": "16px",
+            "paddingAll": "12px",
             "contents": [
                 {
                     "type": "text",
-                    "text": "比價成功，來去撈便宜～",
+                    "text": "🇯🇵 日本精選平台",
                     "weight": "bold",
-                    "size": "md",
+                    "size": "sm",
                     "color": "#16A34A",
                 }
             ],
         },
+        "hero": {
+            "type": "image",
+            "url": hero_img,
+            "size": "full",
+            "aspectRatio": "20:13",
+            "aspectMode": "cover",
+            "action": {
+                "type": "uri",
+                "label": "前往 Mercari",
+                "uri": final_buyee_url,
+            },
+        },
         "body": {
             "type": "box",
             "layout": "vertical",
-            "spacing": "md",
-            "paddingAll": "20px",
-            "contents": body_contents,
+            "spacing": "sm",
+            "paddingAll": "16px",
+            "contents": [
+                {
+                    "type": "text",
+                    "text": "搜尋關鍵字 (日文)：",
+                    "size": "xs",
+                    "color": "#666666",
+                },
+                {
+                    "type": "text",
+                    "text": clean_keyword,
+                    "weight": "bold",
+                    "size": "lg",
+                    "color": "#111111",
+                    "wrap": True,
+                },
+                *(
+                    [
+                        {
+                            "type": "text",
+                            "text": f"辨識商品：{item_title.strip()}",
+                            "size": "xs",
+                            "color": "#888888",
+                            "wrap": True,
+                            "margin": "xs",
+                        }
+                    ]
+                    if item_title and item_title.strip()
+                    else []
+                ),
+            ],
         },
         "footer": {
             "type": "box",
             "layout": "vertical",
             "spacing": "sm",
-            "paddingAll": "16px",
+            "paddingAll": "14px",
             "contents": [
                 {
                     "type": "button",
@@ -259,7 +279,7 @@ def build_keyword_flex_message(
                     "height": "sm",
                     "action": {
                         "type": "uri",
-                        "label": "前往 Buyee 尋寶",
+                        "label": "前往 Mercari (直購)",
                         "uri": final_buyee_url,
                     },
                 },
@@ -270,10 +290,106 @@ def build_keyword_flex_message(
                     "height": "sm",
                     "action": {
                         "type": "uri",
-                        "label": "前往 日本雅虎 競標",
+                        "label": "前往 日本雅虎 (競標)",
                         "uri": yahoo_url,
                     },
                 },
+                {
+                    "type": "button",
+                    "style": "primary",
+                    "color": RAKUTEN_RED_COLOR,
+                    "height": "sm",
+                    "action": {
+                        "type": "uri",
+                        "label": "前往 日本樂天 (全新品)",
+                        "uri": rakuten_url,
+                    },
+                },
+            ],
+        },
+    }
+
+    # Card 2: Greater China / Taiwan Focus
+    card_china: Dict[str, Any] = {
+        "type": "bubble",
+        "size": "mega",
+        "header": {
+            "type": "box",
+            "layout": "vertical",
+            "backgroundColor": "#FFF7ED",
+            "paddingAll": "12px",
+            "contents": [
+                {
+                    "type": "text",
+                    "text": "🇹🇼/🇨🇳 綜合網購平台",
+                    "weight": "bold",
+                    "size": "sm",
+                    "color": "#EA580C",
+                }
+            ],
+        },
+        "hero": {
+            "type": "image",
+            "url": hero_img,
+            "size": "full",
+            "aspectRatio": "20:13",
+            "aspectMode": "cover",
+            "action": {
+                "type": "uri",
+                "label": "前往 台灣蝦皮",
+                "uri": shopee_url,
+            },
+        },
+        "body": {
+            "type": "box",
+            "layout": "vertical",
+            "spacing": "sm",
+            "paddingAll": "16px",
+            "contents": [
+                {
+                    "type": "text",
+                    "text": "搜尋關鍵字 (中文)：",
+                    "size": "xs",
+                    "color": "#666666",
+                },
+                {
+                    "type": "text",
+                    "text": zh_kw,
+                    "weight": "bold",
+                    "size": "lg",
+                    "color": "#111111",
+                    "wrap": True,
+                },
+                *(
+                    [
+                        {
+                            "type": "text",
+                            "text": f"辨識商品：{item_title.strip()}",
+                            "size": "xs",
+                            "color": "#888888",
+                            "wrap": True,
+                            "margin": "xs",
+                        }
+                    ]
+                    if item_title and item_title.strip()
+                    else []
+                ),
+                {
+                    "type": "text",
+                    "text": "💡 支援台灣蝦皮比價與淘寶跨境直郵，快速比對現貨價！",
+                    "size": "xxs",
+                    "color": "#999999",
+                    "wrap": True,
+                    "margin": "md",
+                },
+            ],
+        },
+        "footer": {
+            "type": "box",
+            "layout": "vertical",
+            "spacing": "sm",
+            "paddingAll": "14px",
+            "contents": [
                 {
                     "type": "button",
                     "style": "primary",
@@ -281,7 +397,7 @@ def build_keyword_flex_message(
                     "height": "sm",
                     "action": {
                         "type": "uri",
-                        "label": "前往 蝦皮 搜尋",
+                        "label": "前往 台灣蝦皮",
                         "uri": shopee_url,
                     },
                 },
@@ -292,7 +408,7 @@ def build_keyword_flex_message(
                     "height": "sm",
                     "action": {
                         "type": "uri",
-                        "label": "前往 淘寶 搜尋",
+                        "label": "前往 淘寶",
                         "uri": taobao_url,
                     },
                 },
@@ -300,7 +416,10 @@ def build_keyword_flex_message(
         },
     }
 
-    return bubble
+    return {
+        "type": "carousel",
+        "contents": [card_japan, card_china],
+    }
 
 
 # Alias for convenience
@@ -317,25 +436,17 @@ def build_price_comparison_flex(
     taobao_affiliate_base_url: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
-    Construct a rich LINE Flex Message (Bubble Container) comparing FB and Japanese market prices.
-
-    Args:
-        parsed_item: Parsed brand, model, and merch metadata.
-        pricing_result: Landed cost calculation and markup analysis.
-        scraper_result: Scraped JPY prices and representative image.
-        affiliate_id: Optional affiliate tracking ID.
-        affiliate_base_url: Optional affiliate tracking base URL redirect endpoint.
-        shopee_affiliate_base_url: Optional Shopee affiliate tracking base URL redirect endpoint.
-        taobao_affiliate_base_url: Optional Taobao affiliate tracking base URL redirect endpoint.
-
-    Returns:
-        Dict[str, Any]: LINE Messaging API compatible Flex Bubble structure.
+    Construct a rich LINE Flex Carousel comparing FB and cross-border market prices across:
+    - Card 1 (Japan Focus): Buyee Mercari, Buyee Yahoo Auctions, Buyee Rakuten
+    - Card 2 (Greater China Focus): Shopee Taiwan, Taobao
     """
     image_url = scraper_result.representative_image_url or DEFAULT_PLACEHOLDER_IMAGE
     final_buyee_url = append_affiliate_id(scraper_result.search_url, affiliate_id=affiliate_id, affiliate_base_url=affiliate_base_url)
 
     jp_kw = parsed_item.keyword_jp or parsed_item.search_query_ja or f"{parsed_item.franchise} {parsed_item.character}".strip()
-    yahoo_url = build_buyee_yahoo_search_url(jp_kw, affiliate_id=affiliate_id, affiliate_base_url=affiliate_base_url)
+    clean_jp_kw = normalize_search_keyword(jp_kw) or "商品搜尋"
+    yahoo_url = build_buyee_yahoo_search_url(clean_jp_kw, affiliate_id=affiliate_id, affiliate_base_url=affiliate_base_url)
+    rakuten_url = build_buyee_rakuten_search_url(clean_jp_kw, affiliate_id=affiliate_id, affiliate_base_url=affiliate_base_url)
 
     shopee_kw = (
         parsed_item.keyword_zh
@@ -343,8 +454,9 @@ def build_price_comparison_flex(
         or parsed_item.keyword_jp
         or parsed_item.search_query_ja
     )
-    shopee_url = build_shopee_search_url(shopee_kw, shopee_affiliate_base_url=shopee_affiliate_base_url)
-    taobao_url = build_taobao_search_url(shopee_kw, taobao_affiliate_base_url=taobao_affiliate_base_url)
+    clean_zh_kw = normalize_search_keyword(shopee_kw) or clean_jp_kw
+    shopee_url = build_shopee_search_url(clean_zh_kw, shopee_affiliate_base_url=shopee_affiliate_base_url)
+    taobao_url = build_taobao_search_url(clean_zh_kw, taobao_affiliate_base_url=taobao_affiliate_base_url)
 
     # Format values for display
     fb_price_str = (
@@ -373,7 +485,8 @@ def build_price_comparison_flex(
         badge_title = "ℹ️ 參考日本即時行情"
         badge_desc = f"採計 Buyee Mercari 前 {scraper_result.total_found} 筆中位數"
 
-    bubble: Dict[str, Any] = {
+    # Card 1: Japan Focus
+    card_japan: Dict[str, Any] = {
         "type": "bubble",
         "size": "mega",
         "header": {
@@ -384,7 +497,7 @@ def build_price_comparison_flex(
             "contents": [
                 {
                     "type": "text",
-                    "text": "比價成功，來去撈便宜～",
+                    "text": "🇯🇵 日本精選平台",
                     "weight": "bold",
                     "size": "sm",
                     "color": "#16A34A",
@@ -399,7 +512,7 @@ def build_price_comparison_flex(
             "aspectMode": "cover",
             "action": {
                 "type": "uri",
-                "label": "View Image",
+                "label": "前往 Mercari",
                 "uri": final_buyee_url,
             },
         },
@@ -407,10 +520,11 @@ def build_price_comparison_flex(
             "type": "box",
             "layout": "vertical",
             "spacing": "md",
+            "paddingAll": "16px",
             "contents": [
                 {
                     "type": "text",
-                    "text": f"搜尋關鍵字：\n{parsed_item.keyword_jp or parsed_item.search_query_ja}",
+                    "text": f"搜尋關鍵字：\n{clean_jp_kw}",
                     "weight": "bold",
                     "size": "md",
                     "wrap": True,
@@ -551,6 +665,7 @@ def build_price_comparison_flex(
             "type": "box",
             "layout": "vertical",
             "spacing": "sm",
+            "paddingAll": "14px",
             "contents": [
                 {
                     "type": "button",
@@ -559,7 +674,7 @@ def build_price_comparison_flex(
                     "height": "sm",
                     "action": {
                         "type": "uri",
-                        "label": "前往 Buyee 尋寶",
+                        "label": "前往 Mercari (直購)",
                         "uri": final_buyee_url,
                     },
                 },
@@ -570,10 +685,101 @@ def build_price_comparison_flex(
                     "height": "sm",
                     "action": {
                         "type": "uri",
-                        "label": "前往 日本雅虎 競標",
+                        "label": "前往 日本雅虎 (競標)",
                         "uri": yahoo_url,
                     },
                 },
+                {
+                    "type": "button",
+                    "style": "primary",
+                    "color": RAKUTEN_RED_COLOR,
+                    "height": "sm",
+                    "action": {
+                        "type": "uri",
+                        "label": "前往 日本樂天 (全新品)",
+                        "uri": rakuten_url,
+                    },
+                },
+                {
+                    "type": "text",
+                    "text": "由 LINE 比價小幫手即時估算",
+                    "size": "xxs",
+                    "color": "#CCCCCC",
+                    "align": "center",
+                    "margin": "xs",
+                },
+            ],
+        },
+    }
+
+    # Card 2: Greater China / Taiwan Focus
+    card_china: Dict[str, Any] = {
+        "type": "bubble",
+        "size": "mega",
+        "header": {
+            "type": "box",
+            "layout": "vertical",
+            "backgroundColor": "#FFF7ED",
+            "paddingAll": "12px",
+            "contents": [
+                {
+                    "type": "text",
+                    "text": "🇹🇼/🇨🇳 綜合網購平台",
+                    "weight": "bold",
+                    "size": "sm",
+                    "color": "#EA580C",
+                }
+            ],
+        },
+        "hero": {
+            "type": "image",
+            "url": image_url,
+            "size": "full",
+            "aspectRatio": "20:13",
+            "aspectMode": "cover",
+            "action": {
+                "type": "uri",
+                "label": "前往 台灣蝦皮",
+                "uri": shopee_url,
+            },
+        },
+        "body": {
+            "type": "box",
+            "layout": "vertical",
+            "spacing": "md",
+            "paddingAll": "16px",
+            "contents": [
+                {
+                    "type": "text",
+                    "text": f"搜尋關鍵字 (中文)：\n{clean_zh_kw}",
+                    "weight": "bold",
+                    "size": "md",
+                    "wrap": True,
+                    "color": "#111111",
+                },
+                {
+                    "type": "text",
+                    "text": f"{parsed_item.franchise} {parsed_item.character}".strip() or "商品比價",
+                    "size": "sm",
+                    "wrap": True,
+                    "color": "#444444",
+                },
+                {
+                    "type": "text",
+                    "text": "💡 支援台灣蝦皮比價與淘寶跨境直郵，快速比對現貨價！",
+                    "size": "xs",
+                    "color": "#777777",
+                    "wrap": True,
+                    "margin": "sm",
+                },
+            ],
+        },
+        "footer": {
+            "type": "box",
+            "layout": "vertical",
+            "spacing": "sm",
+            "paddingAll": "14px",
+            "contents": [
                 {
                     "type": "button",
                     "style": "primary",
@@ -581,7 +787,7 @@ def build_price_comparison_flex(
                     "height": "sm",
                     "action": {
                         "type": "uri",
-                        "label": "前往 蝦皮 搜尋",
+                        "label": "前往 台灣蝦皮",
                         "uri": shopee_url,
                     },
                 },
@@ -592,7 +798,7 @@ def build_price_comparison_flex(
                     "height": "sm",
                     "action": {
                         "type": "uri",
-                        "label": "前往 淘寶 搜尋",
+                        "label": "前往 淘寶",
                         "uri": taobao_url,
                     },
                 },
@@ -608,4 +814,7 @@ def build_price_comparison_flex(
         },
     }
 
-    return bubble
+    return {
+        "type": "carousel",
+        "contents": [card_japan, card_china],
+    }

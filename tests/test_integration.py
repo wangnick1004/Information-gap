@@ -206,34 +206,51 @@ def test_end_to_end_pipeline_with_affiliate_base_url(
         assert isinstance(sent_msg, FlexMessage)
 
         flex_dict = sent_msg.contents.to_dict()
-        buttons = [c for c in flex_dict["footer"]["contents"] if c.get("type") == "button"]
-        assert len(buttons) == 4
+        assert flex_dict["type"] == "carousel"
+        assert len(flex_dict["contents"]) == 2
+
+        # Card 1 (Japan Focus)
+        card_japan = flex_dict["contents"][0]
+        japan_buttons = [c for c in card_japan["footer"]["contents"] if c.get("type") == "button"]
+        assert len(japan_buttons) == 3
 
         # Buyee Mercari Button
-        buyee_uri = buttons[0]["action"]["uri"]
+        buyee_uri = japan_buttons[0]["action"]["uri"]
         assert buyee_uri.startswith("https://affiliate.example.com/redirect?t=")
         assert "https%3A%2F%2Fbuyee.jp%2Fmercari%2Fsearch" in buyee_uri
         assert "af%3Daff_123" in buyee_uri
-        assert buttons[0]["action"]["label"] == "前往 Buyee 尋寶"
+        assert japan_buttons[0]["action"]["label"] == "前往 Mercari (直購)"
 
         # Buyee Yahoo Auctions Button
-        yahoo_uri = buttons[1]["action"]["uri"]
+        yahoo_uri = japan_buttons[1]["action"]["uri"]
         assert yahoo_uri.startswith("https://affiliate.example.com/redirect?t=")
         assert "https%3A%2F%2Fbuyee.jp%2Fitem%2Fsearch%2Fquery" in yahoo_uri
         assert "af%3Daff_123" in yahoo_uri
-        assert buttons[1]["action"]["label"] == "前往 日本雅虎 競標"
+        assert japan_buttons[1]["action"]["label"] == "前往 日本雅虎 (競標)"
+
+        # Buyee Rakuten Button
+        rakuten_uri = japan_buttons[2]["action"]["uri"]
+        assert rakuten_uri.startswith("https://affiliate.example.com/redirect?t=")
+        assert "https%3A%2F%2Fbuyee.jp%2Frakuten%2Fsearch" in rakuten_uri
+        assert "af%3Daff_123" in rakuten_uri
+        assert japan_buttons[2]["action"]["label"] == "前往 日本樂天 (全新品)"
+
+        # Card 2 (Greater China Focus)
+        card_china = flex_dict["contents"][1]
+        china_buttons = [c for c in card_china["footer"]["contents"] if c.get("type") == "button"]
+        assert len(china_buttons) == 2
 
         # Shopee Button (with dynamic affiliate tracking redirect)
-        shopee_uri = buttons[2]["action"]["uri"]
+        shopee_uri = china_buttons[0]["action"]["uri"]
         assert shopee_uri.startswith("https://affiliate.shopee.example.com/click?t=")
         assert "https%3A%2F%2Fshopee.tw%2Fsearch%3Fkeyword%3D" in shopee_uri
-        assert buttons[2]["action"]["label"] == "前往 蝦皮 搜尋"
+        assert china_buttons[0]["action"]["label"] == "前往 台灣蝦皮"
 
         # Taobao Button (with dynamic affiliate tracking redirect)
-        taobao_uri = buttons[3]["action"]["uri"]
+        taobao_uri = china_buttons[1]["action"]["uri"]
         assert taobao_uri.startswith("https://affiliate.taobao.example.com/click?t=")
         assert "https%3A%2F%2Fs.taobao.com%2Fsearch%3Fq%3D" in taobao_uri
-        assert buttons[3]["action"]["label"] == "前往 淘寶 搜尋"
+        assert china_buttons[1]["action"]["label"] == "前往 淘寶"
 
 
 @patch("main.AsyncMessagingApiBlob")
@@ -352,8 +369,12 @@ def test_end_to_end_vague_input_flex_fallback(
         assert isinstance(sent_msg, FlexMessage)
 
         flex_dict = sent_msg.contents.to_dict()
-        buttons = [c for c in flex_dict["footer"]["contents"] if c.get("type") == "button"]
-        assert len(buttons) == 4
+        assert flex_dict["type"] == "carousel"
+        assert len(flex_dict["contents"]) == 2
+        card_japan_btns = [c for c in flex_dict["contents"][0]["footer"]["contents"] if c.get("type") == "button"]
+        assert len(card_japan_btns) == 3
+        card_china_btns = [c for c in flex_dict["contents"][1]["footer"]["contents"] if c.get("type") == "button"]
+        assert len(card_china_btns) == 2
 
 
 
