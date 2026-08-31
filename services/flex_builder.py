@@ -113,33 +113,29 @@ def build_shopee_search_url(
 
 
 def build_taobao_search_url(
-    keyword_zh: str,
+    keyword_zh: Optional[str] = None,
     taobao_affiliate_base_url: Optional[str] = None,
 ) -> str:
     """
-    Construct Global Taobao search URL for the given Traditional Chinese keyword.
-    Base format: https://world.taobao.com/search/search.htm?q=<keyword_zh>
-    If taobao_affiliate_base_url is provided (or configured in environment/settings),
-    wraps the target Global Taobao search URL with single URL-encoding into the redirect tracking format:
-    '{taobao_affiliate_base_url}?t={url_encoded_taobao_search_url}'.
+    Construct Taobao button URL.
+    Due to Taobao's lack of deep-linking support for search queries behind affiliate redirects,
+    this strictly returns the bare TAOBAO_AFFILIATE_BASE_URL without appending '?t=' or passing keyword_zh.
+    Falls back to TAOBAO_SEARCH_BASE_URL if no affiliate base URL is configured.
     """
-    clean_keyword = normalize_search_keyword(keyword_zh)
-    raw_target_url = f"{TAOBAO_SEARCH_BASE_URL}?q={clean_keyword}"
-
     redirect_base = (
         taobao_affiliate_base_url
         or getattr(settings, "taobao_affiliate_base_url", None)
         or os.getenv("TAOBAO_AFFILIATE_BASE_URL")
     )
     if redirect_base and redirect_base.strip():
-        base_clean = redirect_base.strip()
-        # Single URL-encoding applied to the entire raw target base URL without pre-encoding keyword_zh
-        encoded_target = urllib.parse.quote(raw_target_url, safe="")
-        separator = "&" if "?" in base_clean else "?"
-        return f"{base_clean}{separator}t={encoded_target}"
+        return redirect_base.strip()
 
-    encoded = urllib.parse.quote(clean_keyword)
-    return f"{TAOBAO_SEARCH_BASE_URL}?q={encoded}"
+    if keyword_zh:
+        clean_keyword = normalize_search_keyword(keyword_zh)
+        encoded = urllib.parse.quote(clean_keyword)
+        return f"{TAOBAO_SEARCH_BASE_URL}?q={encoded}"
+
+    return TAOBAO_SEARCH_BASE_URL
 
 
 def build_yahoo_tw_search_url(
@@ -470,7 +466,7 @@ def build_keyword_flex_message(
                     "height": "sm",
                     "action": {
                         "type": "uri",
-                        "label": "前往 淘寶",
+                        "label": "前往 淘寶 (請手動搜尋)",
                         "uri": taobao_url,
                     },
                 },
@@ -891,7 +887,7 @@ def build_price_comparison_flex(
                     "height": "sm",
                     "action": {
                         "type": "uri",
-                        "label": "前往 淘寶",
+                        "label": "前往 淘寶 (請手動搜尋)",
                         "uri": taobao_url,
                     },
                 },

@@ -248,13 +248,10 @@ def test_end_to_end_pipeline_with_affiliate_base_url(
         assert "https%3A%2F%2Fshopee.tw%2Fsearch%3Fkeyword%3D" in shopee_uri
         assert china_buttons[0]["action"]["label"] == "前往 台灣蝦皮"
 
-        # Taobao Button (with dynamic affiliate tracking redirect)
+        # Taobao Button (bare affiliate URL without ?t= deep-link)
         taobao_uri = china_buttons[1]["action"]["uri"]
-        assert taobao_uri.startswith("https://affiliate.taobao.example.com/click?t=")
-        assert "https%3A%2F%2Fworld.taobao.com%2Fsearch%2Fsearch.htm%3Fq%3D" in taobao_uri
-        assert "%20" in taobao_uri
-        assert "%2520" not in taobao_uri
-        assert china_buttons[1]["action"]["label"] == "前往 淘寶"
+        assert taobao_uri == "https://affiliate.taobao.example.com/click"
+        assert china_buttons[1]["action"]["label"] == "前往 淘寶 (請手動搜尋)"
 
         # Yahoo Taiwan Button (with dynamic affiliate tracking redirect)
         yahoo_tw_uri = china_buttons[2]["action"]["uri"]

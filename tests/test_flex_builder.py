@@ -112,14 +112,10 @@ def test_build_taobao_search_url():
 
 
 def test_build_taobao_search_url_with_affiliate_base_url():
-    """Test Taobao search URL wrapped with TAOBAO_AFFILIATE_BASE_URL redirect tracking (single URL-encoded)."""
+    """Test Taobao search URL strictly equals bare TAOBAO_AFFILIATE_BASE_URL without ?t= appending."""
     taobao_base = "https://affiliate.taobao.com/redirect"
     url = build_taobao_search_url("排球少年 影山飛雄 趴娃 2020", taobao_affiliate_base_url=taobao_base)
-    assert url.startswith("https://affiliate.taobao.com/redirect?t=")
-    # Target URL should be single URL-encoded (showing %20 for spaces, not %2520)
-    assert "https%3A%2F%2Fworld.taobao.com%2Fsearch%2Fsearch.htm%3Fq%3D" in url
-    assert "%20" in url
-    assert "%2520" not in url
+    assert url == "https://affiliate.taobao.com/redirect"
 
 
 def test_build_yahoo_tw_search_url():
@@ -187,7 +183,7 @@ def test_build_keyword_flex_message():
     assert card2_buttons[0]["color"] == "#EE4D2D"
     assert "shopee.tw/search?keyword=" in card2_buttons[0]["action"]["uri"]
 
-    assert card2_buttons[1]["action"]["label"] == "前往 淘寶"
+    assert card2_buttons[1]["action"]["label"] == "前往 淘寶 (請手動搜尋)"
     assert card2_buttons[1]["color"] == "#FF5000"
     assert "world.taobao.com/search/search.htm?q=" in card2_buttons[1]["action"]["uri"]
 
@@ -271,7 +267,7 @@ def test_build_price_comparison_flex_overpriced():
     assert card2_buttons[0]["color"] == "#EE4D2D"
     assert "shopee.tw/search?keyword=" in card2_buttons[0]["action"]["uri"]
 
-    assert card2_buttons[1]["action"]["label"] == "前往 淘寶"
+    assert card2_buttons[1]["action"]["label"] == "前往 淘寶 (請手動搜尋)"
     assert card2_buttons[1]["color"] == "#FF5000"
     assert "world.taobao.com/search/search.htm?q=" in card2_buttons[1]["action"]["uri"]
 
@@ -328,7 +324,7 @@ def test_build_price_comparison_flex_fair_price():
     assert flex_dict["contents"][0]["footer"]["contents"][1]["action"]["label"] == "前往 日本雅虎 (競標)"
     assert flex_dict["contents"][0]["footer"]["contents"][2]["action"]["label"] == "前往 日本樂天 (全新品)"
     assert flex_dict["contents"][1]["footer"]["contents"][0]["action"]["label"] == "前往 台灣蝦皮"
-    assert flex_dict["contents"][1]["footer"]["contents"][1]["action"]["label"] == "前往 淘寶"
+    assert flex_dict["contents"][1]["footer"]["contents"][1]["action"]["label"] == "前往 淘寶 (請手動搜尋)"
     assert flex_dict["contents"][1]["footer"]["contents"][2]["action"]["label"] == "前往 台灣 Yahoo"
 
     container = FlexContainer.from_dict(flex_dict)
@@ -416,10 +412,9 @@ def test_build_price_comparison_flex_with_affiliate_base_url():
     assert shopee_btn_uri.startswith("https://track.shopee-affiliate.com/redirect?t=")
     assert "https%3A%2F%2Fshopee.tw%2Fsearch%3Fkeyword%3D" in shopee_btn_uri
 
-    assert taobao_btn_uri.startswith("https://track.taobao-affiliate.com/redirect?t=")
-    assert "https%3A%2F%2Fworld.taobao.com%2Fsearch%2Fsearch.htm%3Fq%3D" in taobao_btn_uri
-    assert "%20" in taobao_btn_uri
-    assert "%2520" not in taobao_btn_uri
+    # Taobao affiliate URI is strictly the bare TAOBAO_AFFILIATE_BASE_URL without ?t= appending
+    assert taobao_btn_uri == "https://track.taobao-affiliate.com/redirect"
+    assert card2_buttons[1]["action"]["label"] == "前往 淘寶 (請手動搜尋)"
 
     assert yahoo_tw_btn_uri.startswith("https://track.yahoo-tw-affiliate.com/redirect?t=")
     assert "https%3A%2F%2Ftw.buy.yahoo.com%2Fsearch%2Fproduct%3Fp%3D" in yahoo_tw_btn_uri
