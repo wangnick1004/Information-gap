@@ -213,6 +213,7 @@ def test_end_to_end_pipeline_with_affiliate_base_url(
 
         # Card 1 (Japan Focus)
         card_japan = flex_dict["contents"][0]
+        assert "hero" not in card_japan
         japan_buttons = [c for c in card_japan["footer"]["contents"] if c.get("type") == "button"]
         assert len(japan_buttons) == 3
 
@@ -239,6 +240,7 @@ def test_end_to_end_pipeline_with_affiliate_base_url(
 
         # Card 2 (Greater China Focus)
         card_china = flex_dict["contents"][1]
+        assert "hero" not in card_china
         china_buttons = [c for c in card_china["footer"]["contents"] if c.get("type") == "button"]
         assert len(china_buttons) == 3
 
@@ -248,16 +250,16 @@ def test_end_to_end_pipeline_with_affiliate_base_url(
         assert "https%3A%2F%2Fshopee.tw%2Fsearch%3Fkeyword%3D" in shopee_uri
         assert china_buttons[0]["action"]["label"] == "前往 台灣蝦皮"
 
-        # Taobao Button (bare affiliate URL without ?t= deep-link)
-        taobao_uri = china_buttons[1]["action"]["uri"]
-        assert taobao_uri == "https://affiliate.taobao.example.com/click"
-        assert china_buttons[1]["action"]["label"] == "前往 淘寶 (請手動搜尋)"
-
         # Yahoo Taiwan Button (with dynamic affiliate tracking redirect)
-        yahoo_tw_uri = china_buttons[2]["action"]["uri"]
+        yahoo_tw_uri = china_buttons[1]["action"]["uri"]
         assert yahoo_tw_uri.startswith("https://affiliate.yahoo-tw.example.com/click?t=")
         assert "https%3A%2F%2Ftw.buy.yahoo.com%2Fsearch%2Fproduct%3Fp%3D" in yahoo_tw_uri
-        assert china_buttons[2]["action"]["label"] == "前往 台灣 Yahoo"
+        assert china_buttons[1]["action"]["label"] == "前往 台灣 Yahoo"
+
+        # Taobao Button (bare affiliate URL without ?t= deep-link)
+        taobao_uri = china_buttons[2]["action"]["uri"]
+        assert taobao_uri == "https://affiliate.taobao.example.com/click"
+        assert china_buttons[2]["action"]["label"] == "前往 淘寶 (請手動搜尋)"
 
 
 @patch("main.AsyncMessagingApiBlob")

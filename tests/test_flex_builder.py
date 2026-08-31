@@ -152,6 +152,7 @@ def test_build_keyword_flex_message():
 
     # Card 1: Japan Focus
     card1 = flex_dict["contents"][0]
+    assert "hero" not in card1
     assert card1["header"]["contents"][0]["text"] == "🇯🇵 日本精選平台"
     card1_body = [c.get("text", "") for c in card1["body"]["contents"]]
     assert any("搜尋關鍵字 (日文)：" in t for t in card1_body)
@@ -173,6 +174,7 @@ def test_build_keyword_flex_message():
 
     # Card 2: Greater China Focus
     card2 = flex_dict["contents"][1]
+    assert "hero" not in card2
     assert card2["header"]["contents"][0]["text"] == "🇹🇼/🇨🇳 綜合網購平台"
     card2_body = [c.get("text", "") for c in card2["body"]["contents"]]
     assert any("搜尋關鍵字 (中文)：" in t for t in card2_body)
@@ -183,13 +185,13 @@ def test_build_keyword_flex_message():
     assert card2_buttons[0]["color"] == "#EE4D2D"
     assert "shopee.tw/search?keyword=" in card2_buttons[0]["action"]["uri"]
 
-    assert card2_buttons[1]["action"]["label"] == "前往 淘寶 (請手動搜尋)"
-    assert card2_buttons[1]["color"] == "#FF5000"
-    assert "world.taobao.com/search/search.htm?q=" in card2_buttons[1]["action"]["uri"]
+    assert card2_buttons[1]["action"]["label"] == "前往 台灣 Yahoo"
+    assert card2_buttons[1]["color"] == "#6001D2"
+    assert "tw.buy.yahoo.com/search/product?p=" in card2_buttons[1]["action"]["uri"]
 
-    assert card2_buttons[2]["action"]["label"] == "前往 台灣 Yahoo"
-    assert card2_buttons[2]["color"] == "#6001D2"
-    assert "tw.buy.yahoo.com/search/product?p=" in card2_buttons[2]["action"]["uri"]
+    assert card2_buttons[2]["action"]["label"] == "前往 淘寶 (請手動搜尋)"
+    assert card2_buttons[2]["color"] == "#FF5000"
+    assert "world.taobao.com/search/search.htm?q=" in card2_buttons[2]["action"]["uri"]
 
     # Verify line-bot-sdk parsing
     container = FlexContainer.from_dict(flex_dict)
@@ -240,7 +242,7 @@ def test_build_price_comparison_flex_overpriced():
 
     # Card 1: Japan Focus
     card1 = flex_dict["contents"][0]
-    assert card1["hero"]["url"] == "https://static.mercdn.net/item/detail/orig/photos/m1.jpg"
+    assert "hero" not in card1
     assert card1["header"]["contents"][0]["text"] == "🇯🇵 日本精選平台"
 
     card1_buttons = [c for c in card1["footer"]["contents"] if c.get("type") == "button"]
@@ -259,6 +261,7 @@ def test_build_price_comparison_flex_overpriced():
 
     # Card 2: Greater China Focus
     card2 = flex_dict["contents"][1]
+    assert "hero" not in card2
     assert card2["header"]["contents"][0]["text"] == "🇹🇼/🇨🇳 綜合網購平台"
 
     card2_buttons = [c for c in card2["footer"]["contents"] if c.get("type") == "button"]
@@ -267,13 +270,13 @@ def test_build_price_comparison_flex_overpriced():
     assert card2_buttons[0]["color"] == "#EE4D2D"
     assert "shopee.tw/search?keyword=" in card2_buttons[0]["action"]["uri"]
 
-    assert card2_buttons[1]["action"]["label"] == "前往 淘寶 (請手動搜尋)"
-    assert card2_buttons[1]["color"] == "#FF5000"
-    assert "world.taobao.com/search/search.htm?q=" in card2_buttons[1]["action"]["uri"]
+    assert card2_buttons[1]["action"]["label"] == "前往 台灣 Yahoo"
+    assert card2_buttons[1]["color"] == "#6001D2"
+    assert "tw.buy.yahoo.com/search/product?p=" in card2_buttons[1]["action"]["uri"]
 
-    assert card2_buttons[2]["action"]["label"] == "前往 台灣 Yahoo"
-    assert card2_buttons[2]["color"] == "#6001D2"
-    assert "tw.buy.yahoo.com/search/product?p=" in card2_buttons[2]["action"]["uri"]
+    assert card2_buttons[2]["action"]["label"] == "前往 淘寶 (請手動搜尋)"
+    assert card2_buttons[2]["color"] == "#FF5000"
+    assert "world.taobao.com/search/search.htm?q=" in card2_buttons[2]["action"]["uri"]
 
     # Verify line-bot-sdk v3 FlexContainer can parse the generated structure cleanly
     container = FlexContainer.from_dict(flex_dict)
@@ -319,13 +322,14 @@ def test_build_price_comparison_flex_fair_price():
 
     assert flex_dict["type"] == "carousel"
     assert len(flex_dict["contents"]) == 2
-    assert flex_dict["contents"][0]["hero"]["url"] == "https://images.unsplash.com/photo-1578632767115-351597cf2477?w=600&auto=format&fit=crop&q=80"
+    assert "hero" not in flex_dict["contents"][0]
+    assert "hero" not in flex_dict["contents"][1]
     assert flex_dict["contents"][0]["footer"]["contents"][0]["action"]["label"] == "前往 Mercari (直購)"
     assert flex_dict["contents"][0]["footer"]["contents"][1]["action"]["label"] == "前往 日本雅虎 (競標)"
     assert flex_dict["contents"][0]["footer"]["contents"][2]["action"]["label"] == "前往 日本樂天 (全新品)"
     assert flex_dict["contents"][1]["footer"]["contents"][0]["action"]["label"] == "前往 台灣蝦皮"
-    assert flex_dict["contents"][1]["footer"]["contents"][1]["action"]["label"] == "前往 淘寶 (請手動搜尋)"
-    assert flex_dict["contents"][1]["footer"]["contents"][2]["action"]["label"] == "前往 台灣 Yahoo"
+    assert flex_dict["contents"][1]["footer"]["contents"][1]["action"]["label"] == "前往 台灣 Yahoo"
+    assert flex_dict["contents"][1]["footer"]["contents"][2]["action"]["label"] == "前往 淘寶 (請手動搜尋)"
 
     container = FlexContainer.from_dict(flex_dict)
     assert container is not None
@@ -377,16 +381,15 @@ def test_build_price_comparison_flex_with_affiliate_base_url():
 
     # Card 1: Japan Focus
     card1 = flex_dict["contents"][0]
+    assert "hero" not in card1
     card1_buttons = [c for c in card1["footer"]["contents"] if c.get("type") == "button"]
     assert len(card1_buttons) == 3
 
     btn_uri = card1_buttons[0]["action"]["uri"]
     yahoo_btn_uri = card1_buttons[1]["action"]["uri"]
     rakuten_btn_uri = card1_buttons[2]["action"]["uri"]
-    hero_uri = card1["hero"]["action"]["uri"]
 
     assert btn_uri.startswith("https://track.buyee-affiliate.com/redirect?t=")
-    assert hero_uri.startswith("https://track.buyee-affiliate.com/redirect?t=")
     assert "https%3A%2F%2Fbuyee.jp%2Fmercari%2Fsearch" in btn_uri
     assert "af%3Daff_id_999" in btn_uri
 
@@ -402,21 +405,23 @@ def test_build_price_comparison_flex_with_affiliate_base_url():
 
     # Card 2: Greater China Focus
     card2 = flex_dict["contents"][1]
+    assert "hero" not in card2
     card2_buttons = [c for c in card2["footer"]["contents"] if c.get("type") == "button"]
     assert len(card2_buttons) == 3
 
     shopee_btn_uri = card2_buttons[0]["action"]["uri"]
-    taobao_btn_uri = card2_buttons[1]["action"]["uri"]
-    yahoo_tw_btn_uri = card2_buttons[2]["action"]["uri"]
+    yahoo_tw_btn_uri = card2_buttons[1]["action"]["uri"]
+    taobao_btn_uri = card2_buttons[2]["action"]["uri"]
 
     assert shopee_btn_uri.startswith("https://track.shopee-affiliate.com/redirect?t=")
     assert "https%3A%2F%2Fshopee.tw%2Fsearch%3Fkeyword%3D" in shopee_btn_uri
-
-    # Taobao affiliate URI is strictly the bare TAOBAO_AFFILIATE_BASE_URL without ?t= appending
-    assert taobao_btn_uri == "https://track.taobao-affiliate.com/redirect"
-    assert card2_buttons[1]["action"]["label"] == "前往 淘寶 (請手動搜尋)"
+    assert card2_buttons[0]["action"]["label"] == "前往 台灣蝦皮"
 
     assert yahoo_tw_btn_uri.startswith("https://track.yahoo-tw-affiliate.com/redirect?t=")
     assert "https%3A%2F%2Ftw.buy.yahoo.com%2Fsearch%2Fproduct%3Fp%3D" in yahoo_tw_btn_uri
-    assert card2_buttons[2]["action"]["label"] == "前往 台灣 Yahoo"
+    assert card2_buttons[1]["action"]["label"] == "前往 台灣 Yahoo"
+
+    # Taobao affiliate URI is strictly the bare TAOBAO_AFFILIATE_BASE_URL without ?t= appending
+    assert taobao_btn_uri == "https://track.taobao-affiliate.com/redirect"
+    assert card2_buttons[2]["action"]["label"] == "前往 淘寶 (請手動搜尋)"
 

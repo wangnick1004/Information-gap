@@ -276,18 +276,6 @@ def build_keyword_flex_message(
                 }
             ],
         },
-        "hero": {
-            "type": "image",
-            "url": hero_img,
-            "size": "full",
-            "aspectRatio": "20:13",
-            "aspectMode": "cover",
-            "action": {
-                "type": "uri",
-                "label": "前往 Mercari",
-                "uri": final_buyee_url,
-            },
-        },
         "body": {
             "type": "box",
             "layout": "vertical",
@@ -386,18 +374,6 @@ def build_keyword_flex_message(
                 }
             ],
         },
-        "hero": {
-            "type": "image",
-            "url": hero_img,
-            "size": "full",
-            "aspectRatio": "20:13",
-            "aspectMode": "cover",
-            "action": {
-                "type": "uri",
-                "label": "前往 台灣蝦皮",
-                "uri": shopee_url,
-            },
-        },
         "body": {
             "type": "box",
             "layout": "vertical",
@@ -462,23 +438,23 @@ def build_keyword_flex_message(
                 {
                     "type": "button",
                     "style": "primary",
-                    "color": TAOBAO_RED_ORANGE_COLOR,
-                    "height": "sm",
-                    "action": {
-                        "type": "uri",
-                        "label": "前往 淘寶 (請手動搜尋)",
-                        "uri": taobao_url,
-                    },
-                },
-                {
-                    "type": "button",
-                    "style": "primary",
                     "color": YAHOO_TW_PURPLE_COLOR,
                     "height": "sm",
                     "action": {
                         "type": "uri",
                         "label": "前往 台灣 Yahoo",
                         "uri": yahoo_tw_url,
+                    },
+                },
+                {
+                    "type": "button",
+                    "style": "primary",
+                    "color": TAOBAO_RED_ORANGE_COLOR,
+                    "height": "sm",
+                    "action": {
+                        "type": "uri",
+                        "label": "前往 淘寶 (請手動搜尋)",
+                        "uri": taobao_url,
                     },
                 },
             ],
@@ -592,18 +568,6 @@ def build_price_comparison_flex(
                     "color": "#16A34A",
                 }
             ],
-        },
-        "hero": {
-            "type": "image",
-            "url": image_url,
-            "size": "full",
-            "aspectRatio": "20:13",
-            "aspectMode": "cover",
-            "action": {
-                "type": "uri",
-                "label": "前往 Mercari",
-                "uri": final_buyee_url,
-            },
         },
         "body": {
             "type": "box",
@@ -820,18 +784,6 @@ def build_price_comparison_flex(
                 }
             ],
         },
-        "hero": {
-            "type": "image",
-            "url": image_url,
-            "size": "full",
-            "aspectRatio": "20:13",
-            "aspectMode": "cover",
-            "action": {
-                "type": "uri",
-                "label": "前往 台灣蝦皮",
-                "uri": shopee_url,
-            },
-        },
         "body": {
             "type": "box",
             "layout": "vertical",
@@ -883,23 +835,23 @@ def build_price_comparison_flex(
                 {
                     "type": "button",
                     "style": "primary",
-                    "color": TAOBAO_RED_ORANGE_COLOR,
-                    "height": "sm",
-                    "action": {
-                        "type": "uri",
-                        "label": "前往 淘寶 (請手動搜尋)",
-                        "uri": taobao_url,
-                    },
-                },
-                {
-                    "type": "button",
-                    "style": "primary",
                     "color": YAHOO_TW_PURPLE_COLOR,
                     "height": "sm",
                     "action": {
                         "type": "uri",
                         "label": "前往 台灣 Yahoo",
                         "uri": yahoo_tw_url,
+                    },
+                },
+                {
+                    "type": "button",
+                    "style": "primary",
+                    "color": TAOBAO_RED_ORANGE_COLOR,
+                    "height": "sm",
+                    "action": {
+                        "type": "uri",
+                        "label": "前往 淘寶 (請手動搜尋)",
+                        "uri": taobao_url,
                     },
                 },
                 {
