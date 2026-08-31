@@ -177,6 +177,7 @@ async def handle_line_events(events: list, access_token: str) -> None:
                     affiliate_base_url=settings.affiliate_base_url,
                     shopee_affiliate_base_url=settings.shopee_affiliate_base_url,
                     taobao_affiliate_base_url=settings.taobao_affiliate_base_url,
+                    yahoo_tw_affiliate_base_url=settings.yahoo_tw_affiliate_base_url,
                 )
                 flex_container = FlexContainer.from_dict(flex_dict)
                 alt_text = f"【比價分析】{parsed_item.franchise} {parsed_item.character}".strip()
@@ -218,6 +219,7 @@ async def handle_line_events(events: list, access_token: str) -> None:
                     keyword_zh=kw_zh,
                     shopee_affiliate_base_url=settings.shopee_affiliate_base_url,
                     taobao_affiliate_base_url=settings.taobao_affiliate_base_url,
+                    yahoo_tw_affiliate_base_url=settings.yahoo_tw_affiliate_base_url,
                 )
                 flex_container = FlexContainer.from_dict(keyword_flex_dict)
                 reply_msg = FlexSendMessage(

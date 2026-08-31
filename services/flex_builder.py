@@ -24,12 +24,14 @@ YAHOO_AUCTIONS_COLOR = "#6F42C1"      # Yahoo! Japan Auctions distinctive purple
 RAKUTEN_RED_COLOR = "#BF0000"         # Rakuten Japan signature crimson red
 SHOPEE_ORANGE_COLOR = "#EE4D2D"      # Shopee official vibrant orange
 TAOBAO_RED_ORANGE_COLOR = "#FF5000"  # Taobao official warm red-orange
+YAHOO_TW_PURPLE_COLOR = "#6001D2"     # Yahoo! Taiwan Shopping signature purple
 
 BUYEE_MERCARI_SEARCH_BASE_URL = "https://buyee.jp/mercari/search"
 BUYEE_YAHOO_SEARCH_BASE_URL = "https://buyee.jp/item/search/query"
 BUYEE_RAKUTEN_SEARCH_BASE_URL = "https://buyee.jp/rakuten/shopping/search/category/0"
 SHOPEE_SEARCH_BASE_URL = "https://shopee.tw/search"
 TAOBAO_SEARCH_BASE_URL = "https://main.m.taobao.com/search/index.html"
+YAHOO_TW_SEARCH_BASE_URL = "https://tw.buy.yahoo.com/search/product"
 
 
 def build_buyee_yahoo_search_url(
@@ -139,6 +141,35 @@ def build_taobao_search_url(
     return base_search_url
 
 
+def build_yahoo_tw_search_url(
+    keyword_zh: str,
+    yahoo_tw_affiliate_base_url: Optional[str] = None,
+) -> str:
+    """
+    Construct Yahoo Taiwan search URL for the given Traditional Chinese keyword.
+    Base format: https://tw.buy.yahoo.com/search/product?p=<keyword_zh>
+    If yahoo_tw_affiliate_base_url is provided (or configured in environment/settings),
+    wraps the target Yahoo Taiwan search URL with URL-encoding into the redirect tracking format:
+    '{yahoo_tw_affiliate_base_url}?t={url_encoded_yahoo_tw_search_url}'.
+    """
+    clean_keyword = normalize_search_keyword(keyword_zh)
+    encoded = urllib.parse.quote(clean_keyword)
+    base_search_url = f"{YAHOO_TW_SEARCH_BASE_URL}?p={encoded}"
+
+    redirect_base = (
+        yahoo_tw_affiliate_base_url
+        or getattr(settings, "yahoo_tw_affiliate_base_url", None)
+        or os.getenv("YAHOO_TW_AFFILIATE_BASE_URL")
+    )
+    if redirect_base and redirect_base.strip():
+        base_clean = redirect_base.strip()
+        encoded_target = urllib.parse.quote(base_search_url, safe="")
+        separator = "&" if "?" in base_clean else "?"
+        return f"{base_clean}{separator}t={encoded_target}"
+
+    return base_search_url
+
+
 def append_affiliate_id(
     url: str,
     affiliate_id: Optional[str] = None,
@@ -189,12 +220,13 @@ def build_keyword_flex_message(
     keyword_zh: Optional[str] = None,
     shopee_affiliate_base_url: Optional[str] = None,
     taobao_affiliate_base_url: Optional[str] = None,
+    yahoo_tw_affiliate_base_url: Optional[str] = None,
     image_url: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Construct a LINE Flex Carousel containing 2 cards:
     - Card 1 (Japan Focus): Buyee Mercari, Buyee Yahoo Auctions, Buyee Rakuten
-    - Card 2 (Greater China Focus): Shopee Taiwan, Taobao
+    - Card 2 (Greater China Focus): Shopee Taiwan, Taobao, Yahoo Taiwan
     """
     clean_keyword = normalize_search_keyword(japanese_keyword) or "商品搜尋"
     final_buyee_url = append_affiliate_id(search_url, affiliate_id=affiliate_id, affiliate_base_url=affiliate_base_url)
@@ -204,6 +236,7 @@ def build_keyword_flex_message(
     zh_kw = normalize_search_keyword(keyword_zh) if keyword_zh else (item_title or clean_keyword)
     shopee_url = build_shopee_search_url(zh_kw, shopee_affiliate_base_url=shopee_affiliate_base_url)
     taobao_url = build_taobao_search_url(zh_kw, taobao_affiliate_base_url=taobao_affiliate_base_url)
+    yahoo_tw_url = build_yahoo_tw_search_url(zh_kw, yahoo_tw_affiliate_base_url=yahoo_tw_affiliate_base_url)
 
     logger.info(
         f"[Keyword Flex URLs Constructed]\n"
@@ -211,7 +244,8 @@ def build_keyword_flex_message(
         f"  Buyee Yahoo:   {yahoo_url}\n"
         f"  Buyee Rakuten: {rakuten_url}\n"
         f"  Shopee:        {shopee_url}\n"
-        f"  Taobao:        {taobao_url}"
+        f"  Taobao:        {taobao_url}\n"
+        f"  Yahoo TW:      {yahoo_tw_url}"
     )
     print(
         f"[DEBUG] [Keyword Flex URLs Constructed]\n"
@@ -219,7 +253,8 @@ def build_keyword_flex_message(
         f"  Buyee Yahoo:   {yahoo_url}\n"
         f"  Buyee Rakuten: {rakuten_url}\n"
         f"  Shopee:        {shopee_url}\n"
-        f"  Taobao:        {taobao_url}",
+        f"  Taobao:        {taobao_url}\n"
+        f"  Yahoo TW:      {yahoo_tw_url}",
         flush=True,
     )
 
@@ -402,7 +437,7 @@ def build_keyword_flex_message(
                 ),
                 {
                     "type": "text",
-                    "text": "💡 支援台灣蝦皮比價與淘寶跨境直郵，快速比對現貨價！",
+                    "text": "💡 支援台灣蝦皮、淘寶與台灣 Yahoo 比價，快速比對現貨價！",
                     "size": "xxs",
                     "color": "#999999",
                     "wrap": True,
@@ -438,6 +473,17 @@ def build_keyword_flex_message(
                         "uri": taobao_url,
                     },
                 },
+                {
+                    "type": "button",
+                    "style": "primary",
+                    "color": YAHOO_TW_PURPLE_COLOR,
+                    "height": "sm",
+                    "action": {
+                        "type": "uri",
+                        "label": "前往 台灣 Yahoo",
+                        "uri": yahoo_tw_url,
+                    },
+                },
             ],
         },
     }
@@ -450,8 +496,6 @@ def build_keyword_flex_message(
 
 # Alias for convenience
 build_keyword_flex = build_keyword_flex_message
-
-
 def build_price_comparison_flex(
     parsed_item: ParsedItem,
     pricing_result: PricingResult,
@@ -460,11 +504,12 @@ def build_price_comparison_flex(
     affiliate_base_url: Optional[str] = None,
     shopee_affiliate_base_url: Optional[str] = None,
     taobao_affiliate_base_url: Optional[str] = None,
+    yahoo_tw_affiliate_base_url: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Construct a rich LINE Flex Carousel comparing FB and cross-border market prices across:
     - Card 1 (Japan Focus): Buyee Mercari, Buyee Yahoo Auctions, Buyee Rakuten
-    - Card 2 (Greater China Focus): Shopee Taiwan, Taobao
+    - Card 2 (Greater China Focus): Shopee Taiwan, Taobao, Yahoo Taiwan
     """
     image_url = scraper_result.representative_image_url or DEFAULT_PLACEHOLDER_IMAGE
     final_buyee_url = append_affiliate_id(scraper_result.search_url, affiliate_id=affiliate_id, affiliate_base_url=affiliate_base_url)
@@ -483,6 +528,7 @@ def build_price_comparison_flex(
     clean_zh_kw = normalize_search_keyword(shopee_kw) or clean_jp_kw
     shopee_url = build_shopee_search_url(clean_zh_kw, shopee_affiliate_base_url=shopee_affiliate_base_url)
     taobao_url = build_taobao_search_url(clean_zh_kw, taobao_affiliate_base_url=taobao_affiliate_base_url)
+    yahoo_tw_url = build_yahoo_tw_search_url(clean_zh_kw, yahoo_tw_affiliate_base_url=yahoo_tw_affiliate_base_url)
 
     logger.info(
         f"[Price Comparison Flex URLs Constructed]\n"
@@ -490,7 +536,8 @@ def build_price_comparison_flex(
         f"  Buyee Yahoo:   {yahoo_url}\n"
         f"  Buyee Rakuten: {rakuten_url}\n"
         f"  Shopee:        {shopee_url}\n"
-        f"  Taobao:        {taobao_url}"
+        f"  Taobao:        {taobao_url}\n"
+        f"  Yahoo TW:      {yahoo_tw_url}"
     )
     print(
         f"[DEBUG] [Price Comparison Flex URLs Constructed]\n"
@@ -498,7 +545,8 @@ def build_price_comparison_flex(
         f"  Buyee Yahoo:   {yahoo_url}\n"
         f"  Buyee Rakuten: {rakuten_url}\n"
         f"  Shopee:        {shopee_url}\n"
-        f"  Taobao:        {taobao_url}",
+        f"  Taobao:        {taobao_url}\n"
+        f"  Yahoo TW:      {yahoo_tw_url}",
         flush=True,
     )
 
@@ -810,7 +858,7 @@ def build_price_comparison_flex(
                 },
                 {
                     "type": "text",
-                    "text": "💡 支援台灣蝦皮比價與淘寶跨境直郵，快速比對現貨價！",
+                    "text": "💡 支援台灣蝦皮、淘寶與台灣 Yahoo 比價，快速比對現貨價！",
                     "size": "xs",
                     "color": "#777777",
                     "wrap": True,
@@ -844,6 +892,17 @@ def build_price_comparison_flex(
                         "type": "uri",
                         "label": "前往 淘寶",
                         "uri": taobao_url,
+                    },
+                },
+                {
+                    "type": "button",
+                    "style": "primary",
+                    "color": YAHOO_TW_PURPLE_COLOR,
+                    "height": "sm",
+                    "action": {
+                        "type": "uri",
+                        "label": "前往 台灣 Yahoo",
+                        "uri": yahoo_tw_url,
                     },
                 },
                 {

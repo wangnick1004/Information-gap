@@ -183,12 +183,14 @@ def test_end_to_end_pipeline_with_affiliate_base_url(
     aff_base = "https://affiliate.example.com/redirect"
     shopee_aff_base = "https://affiliate.shopee.example.com/click"
     taobao_aff_base = "https://affiliate.taobao.example.com/click"
+    yahoo_tw_aff_base = "https://affiliate.yahoo-tw.example.com/click"
     with patch.object(settings, "line_channel_secret", secret), \
          patch.object(settings, "line_channel_access_token", token), \
          patch.object(settings, "buyee_affiliate_id", "aff_123"), \
          patch.object(settings, "affiliate_base_url", aff_base), \
          patch.object(settings, "shopee_affiliate_base_url", shopee_aff_base), \
-         patch.object(settings, "taobao_affiliate_base_url", taobao_aff_base):
+         patch.object(settings, "taobao_affiliate_base_url", taobao_aff_base), \
+         patch.object(settings, "yahoo_tw_affiliate_base_url", yahoo_tw_aff_base):
 
         response = client.post(
             "/api/webhook",
@@ -238,7 +240,7 @@ def test_end_to_end_pipeline_with_affiliate_base_url(
         # Card 2 (Greater China Focus)
         card_china = flex_dict["contents"][1]
         china_buttons = [c for c in card_china["footer"]["contents"] if c.get("type") == "button"]
-        assert len(china_buttons) == 2
+        assert len(china_buttons) == 3
 
         # Shopee Button (with dynamic affiliate tracking redirect)
         shopee_uri = china_buttons[0]["action"]["uri"]
@@ -251,6 +253,12 @@ def test_end_to_end_pipeline_with_affiliate_base_url(
         assert taobao_uri.startswith("https://affiliate.taobao.example.com/click?t=")
         assert "https%3A%2F%2Fmain.m.taobao.com%2Fsearch%2Findex.html%3Fq%3D" in taobao_uri
         assert china_buttons[1]["action"]["label"] == "前往 淘寶"
+
+        # Yahoo Taiwan Button (with dynamic affiliate tracking redirect)
+        yahoo_tw_uri = china_buttons[2]["action"]["uri"]
+        assert yahoo_tw_uri.startswith("https://affiliate.yahoo-tw.example.com/click?t=")
+        assert "https%3A%2F%2Ftw.buy.yahoo.com%2Fsearch%2Fproduct%3Fp%3D" in yahoo_tw_uri
+        assert china_buttons[2]["action"]["label"] == "前往 台灣 Yahoo"
 
 
 @patch("main.AsyncMessagingApiBlob")

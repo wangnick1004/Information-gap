@@ -9,6 +9,7 @@ from services.flex_builder import (
     build_price_comparison_flex,
     build_shopee_search_url,
     build_taobao_search_url,
+    build_yahoo_tw_search_url,
 )
 from services.parser import ParsedAnimeItem
 from services.pricing import PricingResult
@@ -119,6 +120,21 @@ def test_build_taobao_search_url_with_affiliate_base_url():
     assert "https%3A%2F%2Fmain.m.taobao.com%2Fsearch%2Findex.html%3Fq%3D" in url
 
 
+def test_build_yahoo_tw_search_url():
+    """Test Yahoo Taiwan search URL construction with URL encoding."""
+    url = build_yahoo_tw_search_url("排球少年 影山飛雄 趴娃 2020")
+    assert url.startswith("https://tw.buy.yahoo.com/search/product?p=")
+    assert "%E6%8E%92%E7%90%83%E5%B0%91%E5%B9%B4" in url
+
+
+def test_build_yahoo_tw_search_url_with_affiliate_base_url():
+    """Test Yahoo Taiwan search URL wrapped with YAHOO_TW_AFFILIATE_BASE_URL redirect tracking."""
+    yahoo_tw_base = "https://affiliate.yahoo.com.tw/redirect"
+    url = build_yahoo_tw_search_url("排球少年 影山飛雄 趴娃 2020", yahoo_tw_affiliate_base_url=yahoo_tw_base)
+    assert url.startswith("https://affiliate.yahoo.com.tw/redirect?t=")
+    assert "https%3A%2F%2Ftw.buy.yahoo.com%2Fsearch%2Fproduct%3Fp%3D" in url
+
+
 def test_build_keyword_flex_message():
     """Test dedicated keyword Flex Message structure with carousel layout (Japan & Greater China cards)."""
     japanese_keyword = "Sony WH-1000XM5 ヘッドホン"
@@ -164,7 +180,7 @@ def test_build_keyword_flex_message():
     assert any("搜尋關鍵字 (中文)：" in t for t in card2_body)
 
     card2_buttons = [c for c in card2["footer"]["contents"] if c.get("type") == "button"]
-    assert len(card2_buttons) == 2
+    assert len(card2_buttons) == 3
     assert card2_buttons[0]["action"]["label"] == "前往 台灣蝦皮"
     assert card2_buttons[0]["color"] == "#EE4D2D"
     assert "shopee.tw/search?keyword=" in card2_buttons[0]["action"]["uri"]
@@ -172,6 +188,10 @@ def test_build_keyword_flex_message():
     assert card2_buttons[1]["action"]["label"] == "前往 淘寶"
     assert card2_buttons[1]["color"] == "#FF5000"
     assert "main.m.taobao.com/search/index.html?q=" in card2_buttons[1]["action"]["uri"]
+
+    assert card2_buttons[2]["action"]["label"] == "前往 台灣 Yahoo"
+    assert card2_buttons[2]["color"] == "#6001D2"
+    assert "tw.buy.yahoo.com/search/product?p=" in card2_buttons[2]["action"]["uri"]
 
     # Verify line-bot-sdk parsing
     container = FlexContainer.from_dict(flex_dict)
@@ -244,7 +264,7 @@ def test_build_price_comparison_flex_overpriced():
     assert card2["header"]["contents"][0]["text"] == "🇹🇼/🇨🇳 綜合網購平台"
 
     card2_buttons = [c for c in card2["footer"]["contents"] if c.get("type") == "button"]
-    assert len(card2_buttons) == 2
+    assert len(card2_buttons) == 3
     assert card2_buttons[0]["action"]["label"] == "前往 台灣蝦皮"
     assert card2_buttons[0]["color"] == "#EE4D2D"
     assert "shopee.tw/search?keyword=" in card2_buttons[0]["action"]["uri"]
@@ -252,6 +272,10 @@ def test_build_price_comparison_flex_overpriced():
     assert card2_buttons[1]["action"]["label"] == "前往 淘寶"
     assert card2_buttons[1]["color"] == "#FF5000"
     assert "main.m.taobao.com/search/index.html?q=" in card2_buttons[1]["action"]["uri"]
+
+    assert card2_buttons[2]["action"]["label"] == "前往 台灣 Yahoo"
+    assert card2_buttons[2]["color"] == "#6001D2"
+    assert "tw.buy.yahoo.com/search/product?p=" in card2_buttons[2]["action"]["uri"]
 
     # Verify line-bot-sdk v3 FlexContainer can parse the generated structure cleanly
     container = FlexContainer.from_dict(flex_dict)
@@ -303,6 +327,7 @@ def test_build_price_comparison_flex_fair_price():
     assert flex_dict["contents"][0]["footer"]["contents"][2]["action"]["label"] == "前往 日本樂天 (全新品)"
     assert flex_dict["contents"][1]["footer"]["contents"][0]["action"]["label"] == "前往 台灣蝦皮"
     assert flex_dict["contents"][1]["footer"]["contents"][1]["action"]["label"] == "前往 淘寶"
+    assert flex_dict["contents"][1]["footer"]["contents"][2]["action"]["label"] == "前往 台灣 Yahoo"
 
     container = FlexContainer.from_dict(flex_dict)
     assert container is not None
@@ -346,6 +371,7 @@ def test_build_price_comparison_flex_with_affiliate_base_url():
         affiliate_base_url="https://track.buyee-affiliate.com/redirect",
         shopee_affiliate_base_url="https://track.shopee-affiliate.com/redirect",
         taobao_affiliate_base_url="https://track.taobao-affiliate.com/redirect",
+        yahoo_tw_affiliate_base_url="https://track.yahoo-tw-affiliate.com/redirect",
     )
 
     assert flex_dict["type"] == "carousel"
@@ -379,13 +405,19 @@ def test_build_price_comparison_flex_with_affiliate_base_url():
     # Card 2: Greater China Focus
     card2 = flex_dict["contents"][1]
     card2_buttons = [c for c in card2["footer"]["contents"] if c.get("type") == "button"]
-    assert len(card2_buttons) == 2
+    assert len(card2_buttons) == 3
 
     shopee_btn_uri = card2_buttons[0]["action"]["uri"]
     taobao_btn_uri = card2_buttons[1]["action"]["uri"]
+    yahoo_tw_btn_uri = card2_buttons[2]["action"]["uri"]
 
     assert shopee_btn_uri.startswith("https://track.shopee-affiliate.com/redirect?t=")
     assert "https%3A%2F%2Fshopee.tw%2Fsearch%3Fkeyword%3D" in shopee_btn_uri
 
     assert taobao_btn_uri.startswith("https://track.taobao-affiliate.com/redirect?t=")
     assert "https%3A%2F%2Fmain.m.taobao.com%2Fsearch%2Findex.html%3Fq%3D" in taobao_btn_uri
+
+    assert yahoo_tw_btn_uri.startswith("https://track.yahoo-tw-affiliate.com/redirect?t=")
+    assert "https%3A%2F%2Ftw.buy.yahoo.com%2Fsearch%2Fproduct%3Fp%3D" in yahoo_tw_btn_uri
+    assert card2_buttons[2]["action"]["label"] == "前往 台灣 Yahoo"
+
