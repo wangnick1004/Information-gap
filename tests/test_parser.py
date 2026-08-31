@@ -417,19 +417,20 @@ async def test_parse_fb_post_keyword_normalization():
 
 
 @pytest.mark.anyio
-async def test_parse_fb_post_irrelevant_text():
-    """Test that irrelevant non-goods text raises IrrelevantPostError with generic message."""
-    post_text = "今天天氣真好，大家要去哪裡玩？"
+async def test_parse_fb_post_generic_category_fallback():
+    """Test that ambiguous or unknown product input returns deduced generic category without failing."""
+    post_text = "求推薦這把桌球拍"
 
     mock_response = MagicMock()
     mock_response.text = json.dumps({
-        "franchise": "",
-        "character": "",
-        "item_type": "",
+        "franchise": "桌球拍",
+        "character": "桌球拍",
+        "item_type": "卓球ラケット",
         "year_or_edition": None,
-        "search_query_ja": "",
+        "keyword_jp": "卓球ラケット",
+        "keyword_zh": "桌球拍",
         "fb_price_twd": None,
-        "is_anime_merch": False,
+        "is_anime_merch": True,
     })
 
     with patch("services.parser.genai.Client") as mock_client_class:
@@ -439,10 +440,44 @@ async def test_parse_fb_post_irrelevant_text():
         mock_client.aio.chats.create.return_value = mock_chat
         mock_chat.send_message = AsyncMock(return_value=mock_response)
 
-        with pytest.raises(IrrelevantPostError) as exc_info:
-            await parse_fb_post(post_text, api_key="fake_api_key")
+        result = await parse_fb_post(post_text, api_key="fake_api_key")
 
-        assert "無法解析此貼文" in str(exc_info.value)
+        assert isinstance(result, ParsedItem)
+        assert result.keyword_jp == "卓球ラケット"
+        assert result.keyword_zh == "桌球拍"
+        assert result.is_anime_merch is True
+
+
+@pytest.mark.anyio
+async def test_parse_fb_post_empty_model_keywords_fallback():
+    """Test that if model outputs empty keywords, it falls back to cleaned text without raising error."""
+    post_text = "底片相機"
+
+    mock_response = MagicMock()
+    mock_response.text = json.dumps({
+        "franchise": "",
+        "character": "",
+        "item_type": "",
+        "year_or_edition": None,
+        "keyword_jp": "",
+        "keyword_zh": "",
+        "fb_price_twd": None,
+        "is_anime_merch": True,
+    })
+
+    with patch("services.parser.genai.Client") as mock_client_class:
+        mock_client = MagicMock()
+        mock_client_class.return_value = mock_client
+        mock_chat = MagicMock()
+        mock_client.aio.chats.create.return_value = mock_chat
+        mock_chat.send_message = AsyncMock(return_value=mock_response)
+
+        result = await parse_fb_post(post_text, api_key="fake_api_key")
+
+        assert isinstance(result, ParsedItem)
+        assert result.keyword_zh == "底片相機"
+        assert result.keyword_jp == "底片相機"
+        assert result.is_anime_merch is True
 
 
 @pytest.mark.anyio

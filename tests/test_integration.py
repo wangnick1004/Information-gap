@@ -207,26 +207,33 @@ def test_end_to_end_pipeline_with_affiliate_base_url(
 
         flex_dict = sent_msg.contents.to_dict()
         buttons = [c for c in flex_dict["footer"]["contents"] if c.get("type") == "button"]
-        assert len(buttons) == 3
+        assert len(buttons) == 4
 
-        # Buyee Button
+        # Buyee Mercari Button
         buyee_uri = buttons[0]["action"]["uri"]
         assert buyee_uri.startswith("https://affiliate.example.com/redirect?t=")
         assert "https%3A%2F%2Fbuyee.jp%2Fmercari%2Fsearch" in buyee_uri
         assert "af%3Daff_123" in buyee_uri
         assert buttons[0]["action"]["label"] == "前往 Buyee 尋寶"
 
+        # Buyee Yahoo Auctions Button
+        yahoo_uri = buttons[1]["action"]["uri"]
+        assert yahoo_uri.startswith("https://affiliate.example.com/redirect?t=")
+        assert "https%3A%2F%2Fbuyee.jp%2Fitem%2Fsearch%2Fquery" in yahoo_uri
+        assert "af%3Daff_123" in yahoo_uri
+        assert buttons[1]["action"]["label"] == "前往 日本雅虎 競標"
+
         # Shopee Button (with dynamic affiliate tracking redirect)
-        shopee_uri = buttons[1]["action"]["uri"]
+        shopee_uri = buttons[2]["action"]["uri"]
         assert shopee_uri.startswith("https://affiliate.shopee.example.com/click?t=")
         assert "https%3A%2F%2Fshopee.tw%2Fsearch%3Fkeyword%3D" in shopee_uri
-        assert buttons[1]["action"]["label"] == "前往 蝦皮 搜尋"
+        assert buttons[2]["action"]["label"] == "前往 蝦皮 搜尋"
 
         # Taobao Button (with dynamic affiliate tracking redirect)
-        taobao_uri = buttons[2]["action"]["uri"]
+        taobao_uri = buttons[3]["action"]["uri"]
         assert taobao_uri.startswith("https://affiliate.taobao.example.com/click?t=")
         assert "https%3A%2F%2Fs.taobao.com%2Fsearch%3Fq%3D" in taobao_uri
-        assert buttons[2]["action"]["label"] == "前往 淘寶 搜尋"
+        assert buttons[3]["action"]["label"] == "前往 淘寶 搜尋"
 
 
 @patch("main.AsyncMessagingApiBlob")
@@ -294,27 +301,28 @@ def test_end_to_end_image_message_success(
 
 @patch("main.AsyncApiClient")
 @patch("main.AsyncMessagingApi")
-def test_end_to_end_irrelevant_post_fallback(
+def test_end_to_end_vague_input_flex_fallback(
     mock_messaging_api_class,
     mock_api_client_class,
 ):
-    """Test that irrelevant user text triggers the friendly plain-text fallback message."""
+    """Test that vague user input triggers a Flex Message card with general category keywords instead of plain text."""
     mock_api = AsyncMock()
     mock_messaging_api_class.return_value = mock_api
 
     secret = "secret_integration_test"
     token = "token_integration_test"
-    body_str = create_line_text_payload("今天天氣真好")
+    body_str = create_line_text_payload("求推薦底片相機")
     signature = generate_signature(secret, body_str)
 
     mock_gemini_resp = MagicMock()
     mock_gemini_resp.text = json.dumps({
-        "franchise": "",
-        "character": "",
-        "item_type": "",
-        "search_query_ja": "",
+        "franchise": "底片相機",
+        "character": "底片相機",
+        "item_type": "フィルムカメラ",
+        "keyword_jp": "フィルムカメラ",
+        "keyword_zh": "底片相機",
         "fb_price_twd": None,
-        "is_anime_merch": False,
+        "is_anime_merch": True,
     })
 
     with patch("services.parser.genai.Client") as mock_genai_client_class, \
@@ -341,8 +349,14 @@ def test_end_to_end_irrelevant_post_fallback(
         mock_api.reply_message.assert_awaited_once()
         reply_request = mock_api.reply_message.call_args[0][0]
         sent_msg = reply_request.messages[0]
-        assert isinstance(sent_msg, TextMessage)
-        assert "無法解析此貼文" in sent_msg.text
+        assert isinstance(sent_msg, FlexMessage)
+
+        flex_dict = sent_msg.contents.to_dict()
+        buttons = [c for c in flex_dict["footer"]["contents"] if c.get("type") == "button"]
+        assert len(buttons) == 4
+
+
+
 
 
 @patch("main.AsyncApiClient")

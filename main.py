@@ -190,49 +190,46 @@ async def handle_line_events(events: list, access_token: str) -> None:
                 )
                 logger.info("Successfully replied with Flex Message comparison card.")
 
-            except IrrelevantPostError as exc:
-                logger.info(f"Irrelevant post/image received: {exc}")
-                fallback_text = "無法解析此貼文或圖片，請確認是否包含明確的商品名稱、型號或清晰外觀。"
+            except (ScrapingTimeoutError, ScrapingBlockedError, ScrapingError, IrrelevantPostError) as exc:
+                logger.warning(f"Scraping/Parsing fallback ({type(exc).__name__}): {exc}")
+                kw_jp = (
+                    parsed_item.keyword_jp or parsed_item.search_query_ja
+                    if parsed_item
+                    else "人気商品"
+                )
+                kw_zh = (
+                    parsed_item.keyword_zh
+                    if parsed_item and parsed_item.keyword_zh
+                    else (user_text[:30] if user_text else "熱門商品")
+                )
+                search_url = getattr(exc, "search_url", None) or f"https://buyee.jp/mercari/search?keyword={urllib.parse.quote(kw_jp)}"
+                item_title = (
+                    f"{parsed_item.franchise} {parsed_item.character}".strip()
+                    if parsed_item and (parsed_item.franchise or parsed_item.character)
+                    else kw_zh
+                )
+
+                keyword_flex_dict = build_keyword_flex_message(
+                    japanese_keyword=kw_jp,
+                    search_url=search_url,
+                    affiliate_id=settings.buyee_affiliate_id,
+                    item_title=item_title,
+                    affiliate_base_url=settings.affiliate_base_url,
+                    keyword_zh=kw_zh,
+                    shopee_affiliate_base_url=settings.shopee_affiliate_base_url,
+                    taobao_affiliate_base_url=settings.taobao_affiliate_base_url,
+                )
+                flex_container = FlexContainer.from_dict(keyword_flex_dict)
+                reply_msg = FlexSendMessage(
+                    alt_text="比價成功，來去撈便宜～",
+                    contents=flex_container,
+                )
                 await line_bot_api.reply_message(
                     ReplyMessageRequest(
                         reply_token=event.reply_token,
-                        messages=[TextMessage(text=fallback_text)],
+                        messages=[reply_msg],
                     )
                 )
-
-            except (ScrapingTimeoutError, ScrapingBlockedError, ScrapingError) as exc:
-                logger.warning(f"Scraping issue ({type(exc).__name__}): {exc}")
-                if parsed_item and exc.search_url:
-                    item_title = f"{parsed_item.franchise} {parsed_item.character}".strip()
-                    keyword_flex_dict = build_keyword_flex_message(
-                        japanese_keyword=parsed_item.keyword_jp or parsed_item.search_query_ja,
-                        search_url=exc.search_url,
-                        affiliate_id=settings.buyee_affiliate_id,
-                        item_title=item_title,
-                        affiliate_base_url=settings.affiliate_base_url,
-                        keyword_zh=parsed_item.keyword_zh,
-                        shopee_affiliate_base_url=settings.shopee_affiliate_base_url,
-                        taobao_affiliate_base_url=settings.taobao_affiliate_base_url,
-                    )
-                    flex_container = FlexContainer.from_dict(keyword_flex_dict)
-                    reply_msg = FlexSendMessage(
-                        alt_text="比價成功，來去撈便宜～",
-                        contents=flex_container,
-                    )
-                    await line_bot_api.reply_message(
-                        ReplyMessageRequest(
-                            reply_token=event.reply_token,
-                            messages=[reply_msg],
-                        )
-                    )
-                else:
-                    fallback_text = "已辨識商品，但在日本代購平台未找到相符現貨，請稍後再試。"
-                    await line_bot_api.reply_message(
-                        ReplyMessageRequest(
-                            reply_token=event.reply_token,
-                            messages=[TextMessage(text=fallback_text)],
-                        )
-                    )
 
             except GeminiServerError as exc:
                 logger.warning(f"Gemini server error (503 UNAVAILABLE): {exc}")

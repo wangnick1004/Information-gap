@@ -3,6 +3,7 @@ from linebot.v3.messaging import FlexContainer
 
 from services.flex_builder import (
     append_affiliate_id,
+    build_buyee_yahoo_search_url,
     build_keyword_flex_message,
     build_price_comparison_flex,
     build_shopee_search_url,
@@ -41,6 +42,24 @@ def test_append_affiliate_id_with_base_url_redirect():
     assert "keyword%3DSony%2520WH-1000XM5" in redirect_url or "keyword%3DSony" in redirect_url
 
 
+def test_build_buyee_yahoo_search_url():
+    """Test Yahoo! Japan Auctions search URL construction via Buyee."""
+    url = build_buyee_yahoo_search_url("Sony WH-1000XM5 ヘッドホン")
+    assert url.startswith("https://buyee.jp/item/search/query/")
+    assert "Sony" in url or "SONY" in url
+    assert "%E3%83%98%E3%83%83%E3%83%89%E3%83%9B%E3%83%B3" in url
+
+
+def test_build_buyee_yahoo_search_url_with_affiliate_base_url():
+    """Test Yahoo! Japan Auctions search URL wrapped with AFFILIATE_BASE_URL redirect tracking."""
+    base_url = "https://affiliate.example.com/click"
+    affiliate_id = "test_aff_123"
+    url = build_buyee_yahoo_search_url("Sony WH-1000XM5", affiliate_id=affiliate_id, affiliate_base_url=base_url)
+    assert url.startswith("https://affiliate.example.com/click?t=")
+    assert "https%3A%2F%2Fbuyee.jp%2Fitem%2Fsearch%2Fquery" in url
+    assert "af%3Dtest_aff_123" in url
+
+
 def test_build_shopee_search_url():
     """Test Shopee Taiwan search URL construction with URL encoding."""
     url = build_shopee_search_url("Sony WH-1000XM5 耳機")
@@ -75,7 +94,7 @@ def test_build_taobao_search_url_with_affiliate_base_url():
 
 
 def test_build_keyword_flex_message():
-    """Test dedicated keyword Flex Message structure with 3 marketplace buttons."""
+    """Test dedicated keyword Flex Message structure with 4 marketplace buttons."""
     japanese_keyword = "Sony WH-1000XM5 ヘッドホン"
     search_url = "https://buyee.jp/mercari/search?keyword=Sony%20WH-1000XM5%20%E3%83%98%E3%83%83%E3%83%89%E3%83%97%E3%83%B3"
     affiliate_id = "aff_test_888"
@@ -103,25 +122,31 @@ def test_build_keyword_flex_message():
     assert any("SONY WH-1000XM5 ヘッドホン" in t for t in body_texts)
     assert any("中文關鍵字：" in t for t in body_texts)
 
-    # 3. Footer verification (3 buttons)
+    # 3. Footer verification (4 buttons)
     assert "footer" in flex_dict
     buttons = [c for c in flex_dict["footer"]["contents"] if c.get("type") == "button"]
-    assert len(buttons) == 3
+    assert len(buttons) == 4
 
-    # Button 1: Buyee (Green)
+    # Button 1: Buyee Mercari (Green)
     assert buttons[0]["color"] == "#06C755"
     assert buttons[0]["action"]["label"] == "前往 Buyee 尋寶"
     assert "af=aff_test_888" in buttons[0]["action"]["uri"]
 
-    # Button 2: Shopee (Orange)
-    assert buttons[1]["color"] == "#EE4D2D"
-    assert buttons[1]["action"]["label"] == "前往 蝦皮 搜尋"
-    assert "shopee.tw/search?keyword=" in buttons[1]["action"]["uri"]
+    # Button 2: Buyee Yahoo Auctions (Purple)
+    assert buttons[1]["color"] == "#6F42C1"
+    assert buttons[1]["action"]["label"] == "前往 日本雅虎 競標"
+    assert "buyee.jp/item/search/query/" in buttons[1]["action"]["uri"]
+    assert "af=aff_test_888" in buttons[1]["action"]["uri"]
 
-    # Button 3: Taobao (Red/Orange)
-    assert buttons[2]["color"] == "#FF5000"
-    assert buttons[2]["action"]["label"] == "前往 淘寶 搜尋"
-    assert "s.taobao.com/search?q=" in buttons[2]["action"]["uri"]
+    # Button 3: Shopee (Orange)
+    assert buttons[2]["color"] == "#EE4D2D"
+    assert buttons[2]["action"]["label"] == "前往 蝦皮 搜尋"
+    assert "shopee.tw/search?keyword=" in buttons[2]["action"]["uri"]
+
+    # Button 4: Taobao (Red/Orange)
+    assert buttons[3]["color"] == "#FF5000"
+    assert buttons[3]["action"]["label"] == "前往 淘寶 搜尋"
+    assert "s.taobao.com/search?q=" in buttons[3]["action"]["uri"]
 
     # Verify line-bot-sdk parsing
     container = FlexContainer.from_dict(flex_dict)
@@ -171,22 +196,28 @@ def test_build_price_comparison_flex_overpriced():
     assert flex_dict["hero"]["url"] == "https://static.mercdn.net/item/detail/orig/photos/m1.jpg"
 
     buttons = [c for c in flex_dict["footer"]["contents"] if c.get("type") == "button"]
-    assert len(buttons) == 3
+    assert len(buttons) == 4
 
-    # Buyee button
+    # Buyee Mercari button
     assert "af=my_affiliate_tag" in buttons[0]["action"]["uri"]
     assert buttons[0]["color"] == "#06C755"
     assert buttons[0]["action"]["label"] == "前往 Buyee 尋寶"
 
+    # Buyee Yahoo Auctions button
+    assert "af=my_affiliate_tag" in buttons[1]["action"]["uri"]
+    assert buttons[1]["color"] == "#6F42C1"
+    assert buttons[1]["action"]["label"] == "前往 日本雅虎 競標"
+    assert "buyee.jp/item/search/query/" in buttons[1]["action"]["uri"]
+
     # Shopee button
-    assert buttons[1]["color"] == "#EE4D2D"
-    assert buttons[1]["action"]["label"] == "前往 蝦皮 搜尋"
-    assert "shopee.tw/search?keyword=" in buttons[1]["action"]["uri"]
+    assert buttons[2]["color"] == "#EE4D2D"
+    assert buttons[2]["action"]["label"] == "前往 蝦皮 搜尋"
+    assert "shopee.tw/search?keyword=" in buttons[2]["action"]["uri"]
 
     # Taobao button
-    assert buttons[2]["color"] == "#FF5000"
-    assert buttons[2]["action"]["label"] == "前往 淘寶 搜尋"
-    assert "s.taobao.com/search?q=" in buttons[2]["action"]["uri"]
+    assert buttons[3]["color"] == "#FF5000"
+    assert buttons[3]["action"]["label"] == "前往 淘寶 搜尋"
+    assert "s.taobao.com/search?q=" in buttons[3]["action"]["uri"]
 
     # Verify line-bot-sdk v3 FlexContainer can parse the generated structure cleanly
     container = FlexContainer.from_dict(flex_dict)
@@ -233,6 +264,7 @@ def test_build_price_comparison_flex_fair_price():
     assert flex_dict["type"] == "bubble"
     assert flex_dict["hero"]["url"] == "https://images.unsplash.com/photo-1578632767115-351597cf2477?w=600&auto=format&fit=crop&q=80"
     assert flex_dict["footer"]["contents"][0]["action"]["label"] == "前往 Buyee 尋寶"
+    assert flex_dict["footer"]["contents"][1]["action"]["label"] == "前往 日本雅虎 競標"
 
     container = FlexContainer.from_dict(flex_dict)
     assert container is not None
@@ -279,15 +311,23 @@ def test_build_price_comparison_flex_with_affiliate_base_url():
     )
 
     buttons = [c for c in flex_dict["footer"]["contents"] if c.get("type") == "button"]
+    assert len(buttons) == 4
+
     btn_uri = buttons[0]["action"]["uri"]
+    yahoo_btn_uri = buttons[1]["action"]["uri"]
     hero_uri = flex_dict["hero"]["action"]["uri"]
-    shopee_btn_uri = buttons[1]["action"]["uri"]
-    taobao_btn_uri = buttons[2]["action"]["uri"]
+    shopee_btn_uri = buttons[2]["action"]["uri"]
+    taobao_btn_uri = buttons[3]["action"]["uri"]
 
     assert btn_uri.startswith("https://track.buyee-affiliate.com/redirect?t=")
     assert hero_uri.startswith("https://track.buyee-affiliate.com/redirect?t=")
     assert "https%3A%2F%2Fbuyee.jp%2Fmercari%2Fsearch" in btn_uri
     assert "af%3Daff_id_999" in btn_uri
+
+    assert yahoo_btn_uri.startswith("https://track.buyee-affiliate.com/redirect?t=")
+    assert "https%3A%2F%2Fbuyee.jp%2Fitem%2Fsearch%2Fquery" in yahoo_btn_uri
+    assert "af%3Daff_id_999" in yahoo_btn_uri
+    assert buttons[1]["action"]["label"] == "前往 日本雅虎 競標"
 
     assert shopee_btn_uri.startswith("https://track.shopee-affiliate.com/redirect?t=")
     assert "https%3A%2F%2Fshopee.tw%2Fsearch%3Fkeyword%3D" in shopee_btn_uri

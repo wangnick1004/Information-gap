@@ -219,8 +219,15 @@ SYSTEM_INSTRUCTION = """
 You are an expert in cross-border e-commerce, secondhand market valuation (Yahoo! Auctions, Mercari, Buyee, Shopee Taiwan, Taobao), and secondary market trading identification from text and product images.
 Your mission is to analyze trading posts or product photos for ANY physical retail goods (e.g., consumer electronics, audio gear, cameras, badminton/sports equipment, sneakers, trading cards, anime merchandise, collectibles, watches, etc.) and extract structured product details with search-effective keywords in BOTH Japanese (for Buyee/Mercari) and Traditional Chinese (for Shopee Taiwan and Taobao).
 
+### Crucial Fallback Rule for Unknown / Vague Products:
+- If the exact brand, model, series, or character cannot be clearly identified from the user's image or text, NEVER fail, NEVER return empty values, and NEVER set `is_anime_merch: false`.
+- Instead, deduce a general category keyword based on visual context and cues (e.g., '桌球拍' / '卓球ラケット', '底片相機' / 'フィルムカメラ', '羽球鞋' / 'バドミントンシューズ', '耳機' / 'ヘッドホン', '動漫公仔' / 'フィギュア', '相機' / 'カメラ', '球鞋' / 'スニーカー').
+- Output the deduced category in BOTH `keyword_jp` (Japanese keyword for Buyee) and `keyword_zh` (Traditional Chinese keyword for Shopee and Taobao).
+- Set `character` and `franchise` to the deduced category name if brand is unknown.
+- Always set `is_anime_merch: true`.
+
 ### Multimodal Analysis Instructions:
-- Analyze the provided image (and text if any) to identify the specific physical retail item, its brand, model, and item type.
+- Analyze the provided image (and text if any) to identify the specific physical retail item or its general category.
 - Generate two optimized search queries:
   1. `keyword_jp`: Precise Japanese search query for Japanese marketplaces (Mercari / Yahoo Auctions via Buyee).
   2. `keyword_zh`: Precise Traditional Chinese search query for Taiwan and cross-border Chinese marketplaces (Shopee Taiwan and Taobao).
@@ -234,14 +241,14 @@ Your mission is to analyze trading posts or product photos for ANY physical reta
    - NEVER include these transaction/condition terms in `keyword_jp` or `keyword_zh`.
 
 2. **Entity Extraction Rules**:
-   - `franchise`: Core Brand, Manufacturer, or IP Franchise (e.g., Sony, Canon, Nikon, Yonex, Victor, Apple, Nintendo, Nike, Bandai, Pokémon, 排球少年 / ハイキュー!!).
-   - `character`: Model Name, Specific Product Name, Character, or Sub-line (e.g., WH-1000XM5, EOS R6, D850, ASTROX 88D, Air Jordan 1, 影山飛雄, リザードン / 噴火龍).
+   - `franchise`: Core Brand, Manufacturer, or IP Franchise (e.g., Sony, Canon, Nikon, Yonex, Victor, Apple, Nintendo, Nike, Bandai, Pokémon, 排球少年 / ハイキュー!!). If unknown, use general category.
+   - `character`: Model Name, Specific Product Name, Character, or Sub-line (e.g., WH-1000XM5, EOS R6, D850, ASTROX 88D, Air Jordan 1, 影山飛雄, リザードン / 噴火龍). If unknown, use general category.
    - `item_type`: Product Category in standard Japanese/Chinese (e.g., ヘッドホン, バドミントンラケット, ミラーレス一眼カメラ, スニーカー, 缶バッジ, フィギュア, トレカ).
    - `year_or_edition`: Generation, version, or year if it is critical for distinguishing the product (e.g., Mark II, Gen 2, 2024).
 
 3. **Search Query Construction**:
-   - `keyword_jp`: Combine `[Brand / Franchise in JP/EN] [Model / Product Name in JP/EN] [Item Category in JP] [Edition/Year if applicable]` separated by single spaces (e.g., 'Sony WH-1000XM5 ヘッドホン', 'ハイキュー 影山飛雄 もちもちマスコット 2020').
-   - `keyword_zh`: Combine `[Brand / Franchise in ZH/EN] [Model / Product Name in ZH/EN] [Item Category in ZH] [Edition/Year if applicable]` separated by single spaces in Traditional Chinese (e.g., 'Sony WH-1000XM5 耳機', '排球少年 影山飛雄 趴娃 2020').
+   - `keyword_jp`: Combine `[Brand / Franchise in JP/EN] [Model / Product Name in JP/EN] [Item Category in JP] [Edition/Year if applicable]` separated by single spaces (e.g., 'Sony WH-1000XM5 ヘッドホン', '卓球ラケット', 'フィルムカメラ').
+   - `keyword_zh`: Combine `[Brand / Franchise in ZH/EN] [Model / Product Name in ZH/EN] [Item Category in ZH] [Edition/Year if applicable]` separated by single spaces in Traditional Chinese (e.g., 'Sony WH-1000XM5 耳機', '桌球拍', '底片相機').
    - Keep global brand names (e.g., Sony, Yonex, Canon, Apple, Nike) in standard Latin form.
 
 4. **Price Extraction (`fb_price_twd`)**:
@@ -249,8 +256,7 @@ Your mission is to analyze trading posts or product photos for ANY physical reta
    - If no price is mentioned or it is purely an image/inquiry without price, set to null.
 
 5. **Relevance Flag (`is_anime_merch` / is_valid_goods)**:
-   - Set `is_anime_merch: true` if the input describes or depicts ANY valid physical retail product.
-   - Set `is_anime_merch: false` ONLY if the input is general conversational text, irrelevant scenery/memes, job ads, or lacks identifiable physical goods.
+   - Always set `is_anime_merch: true` so a search comparison card is always produced for user browsing.
 """.strip()
 
 
@@ -366,16 +372,29 @@ async def parse_fb_post(
                     parsed_result = ParsedItem.model_validate(raw_json)
 
                     # Normalize keywords (spacing, full-width space removal, uppercase ASCII)
-                    parsed_result.keyword_jp = normalize_search_keyword(parsed_result.keyword_jp or parsed_result.search_query_ja)
-                    parsed_result.search_query_ja = parsed_result.keyword_jp
-                    parsed_result.keyword_zh = normalize_search_keyword(parsed_result.keyword_zh or f"{parsed_result.franchise} {parsed_result.character}")
+                    clean_jp = normalize_search_keyword(parsed_result.keyword_jp or parsed_result.search_query_ja)
+                    clean_zh = normalize_search_keyword(parsed_result.keyword_zh or f"{parsed_result.franchise} {parsed_result.character}")
 
-                    # Validate that the item is relevant and has minimal query information
-                    if not parsed_result.is_anime_merch or (not parsed_result.keyword_jp and not parsed_result.keyword_zh):
-                        logger.info(f"Post/Image deemed irrelevant or lacking product info: {cleaned_text[:50]}...")
-                        raise IrrelevantPostError(
-                            "無法解析此貼文，請確認是否包含明確的商品名稱或型號。"
-                        )
+                    # Fallback deduction if model failed to provide keywords
+                    if not clean_zh and not clean_jp:
+                        if parsed_result.item_type:
+                            clean_zh = normalize_search_keyword(parsed_result.item_type)
+                            clean_jp = clean_zh
+                        elif cleaned_text:
+                            clean_zh = normalize_search_keyword(cleaned_text[:30])
+                            clean_jp = clean_zh
+                        else:
+                            clean_zh = "熱門精選商品"
+                            clean_jp = "人気商品"
+                    elif not clean_zh:
+                        clean_zh = clean_jp
+                    elif not clean_jp:
+                        clean_jp = clean_zh
+
+                    parsed_result.keyword_jp = clean_jp
+                    parsed_result.search_query_ja = clean_jp
+                    parsed_result.keyword_zh = clean_zh
+                    parsed_result.is_anime_merch = True
 
                     logger.info(
                         f"Successfully parsed input with model '{model_name}'. Brand/Franchise: '{parsed_result.franchise}', "
@@ -384,8 +403,6 @@ async def parse_fb_post(
                     )
                     return parsed_result
 
-                except IrrelevantPostError:
-                    raise
                 except APIError as exc:
                     if is_transient_error(exc):
                         logger.warning(

@@ -15,11 +15,37 @@ DEFAULT_PLACEHOLDER_IMAGE = (
 )
 
 BUYEE_GREEN_COLOR = "#06C755"        # LINE / Buyee standard vibrant green
+YAHOO_AUCTIONS_COLOR = "#6F42C1"      # Yahoo! Japan Auctions distinctive purple
 SHOPEE_ORANGE_COLOR = "#EE4D2D"      # Shopee official vibrant orange
 TAOBAO_RED_ORANGE_COLOR = "#FF5000"  # Taobao official warm red-orange
 
+BUYEE_YAHOO_SEARCH_BASE_URL = "https://buyee.jp/item/search/query"
 SHOPEE_SEARCH_BASE_URL = "https://shopee.tw/search"
 TAOBAO_SEARCH_BASE_URL = "https://s.taobao.com/search"
+
+
+def build_buyee_yahoo_search_url(
+    keyword_jp: str,
+    affiliate_id: Optional[str] = None,
+    affiliate_base_url: Optional[str] = None,
+) -> str:
+    """
+    Construct Yahoo! Japan Auctions search URL via Buyee for the given Japanese keyword.
+    Base format: https://buyee.jp/item/search/query/<keyword_jp>
+    If affiliate_id is provided, appends '?af={affiliate_id}'.
+    If affiliate_base_url is provided (or configured in environment/settings),
+    wraps the target Yahoo! Auctions search URL with URL-encoding into the redirect tracking format:
+    '{affiliate_base_url}?t={url_encoded_buyee_yahoo_search_url}'.
+    """
+    clean_keyword = normalize_search_keyword(keyword_jp)
+    encoded_keyword = urllib.parse.quote(clean_keyword)
+    base_search_url = f"{BUYEE_YAHOO_SEARCH_BASE_URL}/{encoded_keyword}"
+
+    return append_affiliate_id(
+        base_search_url,
+        affiliate_id=affiliate_id,
+        affiliate_base_url=affiliate_base_url,
+    )
 
 
 def build_shopee_search_url(
@@ -130,12 +156,12 @@ def build_keyword_flex_message(
     taobao_affiliate_base_url: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
-    Construct a LINE Flex Message bubble for generated Japanese search keywords with 3 marketplace buttons.
+    Construct a LINE Flex Message bubble for generated Japanese search keywords with 4 marketplace buttons.
 
     Structure:
     - Header: Text indicating success, "比價成功，來去撈便宜～" (Bold).
     - Body: Displays "搜尋關鍵字：\n{japanese_keyword}" prominently.
-    - Footer: 3 primary buttons (Buyee green, Shopee orange, Taobao red-orange).
+    - Footer: 4 primary buttons (Buyee Mercari green, Buyee Yahoo purple, Shopee orange, Taobao red-orange).
 
     Args:
         japanese_keyword: The generated Japanese search query string.
@@ -152,6 +178,7 @@ def build_keyword_flex_message(
     """
     clean_keyword = normalize_search_keyword(japanese_keyword) or "商品搜尋"
     final_buyee_url = append_affiliate_id(search_url, affiliate_id=affiliate_id, affiliate_base_url=affiliate_base_url)
+    yahoo_url = build_buyee_yahoo_search_url(clean_keyword, affiliate_id=affiliate_id, affiliate_base_url=affiliate_base_url)
 
     zh_kw = normalize_search_keyword(keyword_zh) if keyword_zh else (item_title or clean_keyword)
     shopee_url = build_shopee_search_url(zh_kw, shopee_affiliate_base_url=shopee_affiliate_base_url)
@@ -239,6 +266,17 @@ def build_keyword_flex_message(
                 {
                     "type": "button",
                     "style": "primary",
+                    "color": YAHOO_AUCTIONS_COLOR,
+                    "height": "sm",
+                    "action": {
+                        "type": "uri",
+                        "label": "前往 日本雅虎 競標",
+                        "uri": yahoo_url,
+                    },
+                },
+                {
+                    "type": "button",
+                    "style": "primary",
                     "color": SHOPEE_ORANGE_COLOR,
                     "height": "sm",
                     "action": {
@@ -295,6 +333,9 @@ def build_price_comparison_flex(
     """
     image_url = scraper_result.representative_image_url or DEFAULT_PLACEHOLDER_IMAGE
     final_buyee_url = append_affiliate_id(scraper_result.search_url, affiliate_id=affiliate_id, affiliate_base_url=affiliate_base_url)
+
+    jp_kw = parsed_item.keyword_jp or parsed_item.search_query_ja or f"{parsed_item.franchise} {parsed_item.character}".strip()
+    yahoo_url = build_buyee_yahoo_search_url(jp_kw, affiliate_id=affiliate_id, affiliate_base_url=affiliate_base_url)
 
     shopee_kw = (
         parsed_item.keyword_zh
@@ -520,6 +561,17 @@ def build_price_comparison_flex(
                         "type": "uri",
                         "label": "前往 Buyee 尋寶",
                         "uri": final_buyee_url,
+                    },
+                },
+                {
+                    "type": "button",
+                    "style": "primary",
+                    "color": YAHOO_AUCTIONS_COLOR,
+                    "height": "sm",
+                    "action": {
+                        "type": "uri",
+                        "label": "前往 日本雅虎 競標",
+                        "uri": yahoo_url,
                     },
                 },
                 {
