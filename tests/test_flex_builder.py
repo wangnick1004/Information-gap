@@ -99,7 +99,7 @@ def test_build_shopee_search_url_with_affiliate_base_url():
 def test_build_taobao_search_url():
     """Test Taobao search URL construction with URL encoding."""
     url = build_taobao_search_url("排球少年 影山飛雄 趴娃 2020")
-    assert url.startswith("https://s.taobao.com/search?q=")
+    assert url.startswith("https://ai.taobao.com/search/index.htm?key=")
     assert "%E6%8E%92%E7%90%83%E5%B0%91%E5%B9%B4" in url  # '排球少年' url-encoded
 
 
@@ -109,7 +109,7 @@ def test_build_taobao_search_url_with_affiliate_base_url():
     url = build_taobao_search_url("排球少年 影山飛雄 趴娃 2020", taobao_affiliate_base_url=taobao_base)
     assert url.startswith("https://affiliate.taobao.com/redirect?t=")
     # Target URL should be fully URL-encoded
-    assert "https%3A%2F%2Fs.taobao.com%2Fsearch%3Fq%3D" in url
+    assert "https%3A%2F%2Fai.taobao.com%2Fsearch%2Findex.htm%3Fkey%3D" in url
 
 
 def test_build_keyword_flex_message():
@@ -164,7 +164,7 @@ def test_build_keyword_flex_message():
 
     assert card2_buttons[1]["action"]["label"] == "前往 淘寶"
     assert card2_buttons[1]["color"] == "#FF5000"
-    assert "s.taobao.com/search?q=" in card2_buttons[1]["action"]["uri"]
+    assert "ai.taobao.com/search/index.htm?key=" in card2_buttons[1]["action"]["uri"]
 
     # Verify line-bot-sdk parsing
     container = FlexContainer.from_dict(flex_dict)
@@ -244,7 +244,7 @@ def test_build_price_comparison_flex_overpriced():
 
     assert card2_buttons[1]["action"]["label"] == "前往 淘寶"
     assert card2_buttons[1]["color"] == "#FF5000"
-    assert "s.taobao.com/search?q=" in card2_buttons[1]["action"]["uri"]
+    assert "ai.taobao.com/search/index.htm?key=" in card2_buttons[1]["action"]["uri"]
 
     # Verify line-bot-sdk v3 FlexContainer can parse the generated structure cleanly
     container = FlexContainer.from_dict(flex_dict)
@@ -381,4 +381,4 @@ def test_build_price_comparison_flex_with_affiliate_base_url():
     assert "https%3A%2F%2Fshopee.tw%2Fsearch%3Fkeyword%3D" in shopee_btn_uri
 
     assert taobao_btn_uri.startswith("https://track.taobao-affiliate.com/redirect?t=")
-    assert "https%3A%2F%2Fs.taobao.com%2Fsearch%3Fq%3D" in taobao_btn_uri
+    assert "https%3A%2F%2Fai.taobao.com%2Fsearch%2Findex.htm%3Fkey%3D" in taobao_btn_uri
