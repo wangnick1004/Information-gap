@@ -30,7 +30,7 @@ BUYEE_MERCARI_SEARCH_BASE_URL = "https://buyee.jp/mercari/search"
 BUYEE_YAHOO_SEARCH_BASE_URL = "https://buyee.jp/item/search/query"
 BUYEE_RAKUTEN_SEARCH_BASE_URL = "https://buyee.jp/rakuten/shopping/search/category/0"
 SHOPEE_SEARCH_BASE_URL = "https://shopee.tw/search"
-TAOBAO_SEARCH_BASE_URL = "https://main.m.taobao.com/search/index.html"
+TAOBAO_SEARCH_BASE_URL = "https://ai.taobao.com/search/index.htm"
 YAHOO_TW_SEARCH_BASE_URL = "https://tw.buy.yahoo.com/search/product"
 
 
@@ -117,15 +117,15 @@ def build_taobao_search_url(
     taobao_affiliate_base_url: Optional[str] = None,
 ) -> str:
     """
-    Construct Taobao mobile (H5) search URL for the given Traditional Chinese keyword.
-    Base format: https://main.m.taobao.com/search/index.html?q=<keyword_zh>
+    Construct Ai Taobao (affiliate-friendly) search URL for the given Traditional Chinese keyword.
+    Base format: https://ai.taobao.com/search/index.htm?key=<keyword_zh>
     If taobao_affiliate_base_url is provided (or configured in environment/settings),
-    wraps the target Taobao search URL with URL-encoding into the redirect tracking format:
+    wraps the target Ai Taobao search URL with URL-encoding into the redirect tracking format:
     '{taobao_affiliate_base_url}?t={url_encoded_taobao_search_url}'.
     """
     clean_keyword = normalize_search_keyword(keyword_zh)
     encoded = urllib.parse.quote(clean_keyword)
-    base_search_url = f"{TAOBAO_SEARCH_BASE_URL}?q={encoded}"
+    base_search_url = f"{TAOBAO_SEARCH_BASE_URL}?key={encoded}"
 
     redirect_base = (
         taobao_affiliate_base_url

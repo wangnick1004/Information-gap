@@ -251,7 +251,7 @@ def test_end_to_end_pipeline_with_affiliate_base_url(
         # Taobao Button (with dynamic affiliate tracking redirect)
         taobao_uri = china_buttons[1]["action"]["uri"]
         assert taobao_uri.startswith("https://affiliate.taobao.example.com/click?t=")
-        assert "https%3A%2F%2Fmain.m.taobao.com%2Fsearch%2Findex.html%3Fq%3D" in taobao_uri
+        assert "https%3A%2F%2Fai.taobao.com%2Fsearch%2Findex.htm%3Fkey%3D" in taobao_uri
         assert china_buttons[1]["action"]["label"] == "前往 淘寶"
 
         # Yahoo Taiwan Button (with dynamic affiliate tracking redirect)
@@ -382,7 +382,7 @@ def test_end_to_end_vague_input_flex_fallback(
         card_japan_btns = [c for c in flex_dict["contents"][0]["footer"]["contents"] if c.get("type") == "button"]
         assert len(card_japan_btns) == 3
         card_china_btns = [c for c in flex_dict["contents"][1]["footer"]["contents"] if c.get("type") == "button"]
-        assert len(card_china_btns) == 2
+        assert len(card_china_btns) == 3
 
 
 
