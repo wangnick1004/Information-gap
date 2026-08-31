@@ -515,3 +515,38 @@ async def test_parse_fb_post_api_failure():
             await parse_fb_post(post_text, api_key="fake_api_key")
 
         assert "Gemini API error" in str(exc_info.value)
+
+
+@pytest.mark.anyio
+async def test_parse_fb_post_strict_core_keyword_simplicity():
+    """Test that concise queries like 'Switch 2' preserve core keywords without filler words or over-translation."""
+    post_text = "Switch 2"
+
+    expected_payload = {
+        "franchise": "Nintendo",
+        "character": "Switch 2",
+        "item_type": "ゲーム機",
+        "year_or_edition": None,
+        "keyword_jp": "Switch 2",
+        "keyword_zh": "Switch 2",
+        "fb_price_twd": None,
+        "is_anime_merch": True,
+    }
+
+    mock_response = MagicMock()
+    mock_response.text = json.dumps(expected_payload)
+
+    with patch("services.parser.genai.Client") as mock_client_class:
+        mock_client = MagicMock()
+        mock_client_class.return_value = mock_client
+        mock_chat = MagicMock()
+        mock_client.aio.chats.create.return_value = mock_chat
+        mock_chat.send_message = AsyncMock(return_value=mock_response)
+
+        result = await parse_fb_post(post_text, api_key="fake_api_key")
+
+        assert isinstance(result, ParsedItem)
+        assert result.keyword_jp == "SWITCH 2"
+        assert result.keyword_zh == "SWITCH 2"
+        assert result.is_anime_merch is True
+
