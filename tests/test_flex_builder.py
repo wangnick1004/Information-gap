@@ -64,7 +64,7 @@ def test_build_buyee_yahoo_search_url_with_affiliate_base_url():
 def test_build_buyee_rakuten_search_url():
     """Test Rakuten Japan search URL construction via Buyee."""
     url = build_buyee_rakuten_search_url("Sony WH-1000XM5 ヘッドホン")
-    assert url.startswith("https://buyee.jp/rakuten/search?keyword=")
+    assert url.startswith("https://buyee.jp/rakuten/shopping/search/category/0?query=")
     assert "Sony" in url or "SONY" in url
     assert "%E3%83%98%E3%83%83%E3%83%89%E3%83%9B%E3%83%B3" in url
 
@@ -75,7 +75,7 @@ def test_build_buyee_rakuten_search_url_with_affiliate_base_url():
     affiliate_id = "test_aff_123"
     url = build_buyee_rakuten_search_url("Sony WH-1000XM5", affiliate_id=affiliate_id, affiliate_base_url=base_url)
     assert url.startswith("https://affiliate.example.com/click?t=")
-    assert "https%3A%2F%2Fbuyee.jp%2Frakuten%2Fsearch%3Fkeyword%3D" in url
+    assert "https%3A%2F%2Fbuyee.jp%2Frakuten%2Fshopping%2Fsearch%2Fcategory%2F0%3Fquery%3D" in url
     assert "af%3Dtest_aff_123" in url
 
 
@@ -99,7 +99,7 @@ def test_build_shopee_search_url_with_affiliate_base_url():
 def test_build_taobao_search_url():
     """Test Taobao search URL construction with URL encoding."""
     url = build_taobao_search_url("排球少年 影山飛雄 趴娃 2020")
-    assert url.startswith("https://ai.taobao.com/search/index.htm?key=")
+    assert url.startswith("https://main.m.taobao.com/search/index.html?q=")
     assert "%E6%8E%92%E7%90%83%E5%B0%91%E5%B9%B4" in url  # '排球少年' url-encoded
 
 
@@ -109,7 +109,7 @@ def test_build_taobao_search_url_with_affiliate_base_url():
     url = build_taobao_search_url("排球少年 影山飛雄 趴娃 2020", taobao_affiliate_base_url=taobao_base)
     assert url.startswith("https://affiliate.taobao.com/redirect?t=")
     # Target URL should be fully URL-encoded
-    assert "https%3A%2F%2Fai.taobao.com%2Fsearch%2Findex.htm%3Fkey%3D" in url
+    assert "https%3A%2F%2Fmain.m.taobao.com%2Fsearch%2Findex.html%3Fq%3D" in url
 
 
 def test_build_keyword_flex_message():
@@ -148,7 +148,7 @@ def test_build_keyword_flex_message():
 
     assert card1_buttons[2]["action"]["label"] == "前往 日本樂天 (全新品)"
     assert card1_buttons[2]["color"] == "#BF0000"
-    assert "buyee.jp/rakuten/search?keyword=" in card1_buttons[2]["action"]["uri"]
+    assert "buyee.jp/rakuten/shopping/search/category/0?query=" in card1_buttons[2]["action"]["uri"]
 
     # Card 2: Greater China Focus
     card2 = flex_dict["contents"][1]
@@ -164,7 +164,7 @@ def test_build_keyword_flex_message():
 
     assert card2_buttons[1]["action"]["label"] == "前往 淘寶"
     assert card2_buttons[1]["color"] == "#FF5000"
-    assert "ai.taobao.com/search/index.htm?key=" in card2_buttons[1]["action"]["uri"]
+    assert "main.m.taobao.com/search/index.html?q=" in card2_buttons[1]["action"]["uri"]
 
     # Verify line-bot-sdk parsing
     container = FlexContainer.from_dict(flex_dict)
@@ -230,7 +230,7 @@ def test_build_price_comparison_flex_overpriced():
 
     assert card1_buttons[2]["action"]["label"] == "前往 日本樂天 (全新品)"
     assert card1_buttons[2]["color"] == "#BF0000"
-    assert "buyee.jp/rakuten/search?keyword=" in card1_buttons[2]["action"]["uri"]
+    assert "buyee.jp/rakuten/shopping/search/category/0?query=" in card1_buttons[2]["action"]["uri"]
 
     # Card 2: Greater China Focus
     card2 = flex_dict["contents"][1]
@@ -244,7 +244,7 @@ def test_build_price_comparison_flex_overpriced():
 
     assert card2_buttons[1]["action"]["label"] == "前往 淘寶"
     assert card2_buttons[1]["color"] == "#FF5000"
-    assert "ai.taobao.com/search/index.htm?key=" in card2_buttons[1]["action"]["uri"]
+    assert "main.m.taobao.com/search/index.html?q=" in card2_buttons[1]["action"]["uri"]
 
     # Verify line-bot-sdk v3 FlexContainer can parse the generated structure cleanly
     container = FlexContainer.from_dict(flex_dict)
@@ -365,7 +365,7 @@ def test_build_price_comparison_flex_with_affiliate_base_url():
     assert card1_buttons[1]["action"]["label"] == "前往 日本雅虎 (競標)"
 
     assert rakuten_btn_uri.startswith("https://track.buyee-affiliate.com/redirect?t=")
-    assert "https%3A%2F%2Fbuyee.jp%2Frakuten%2Fsearch" in rakuten_btn_uri
+    assert "https%3A%2F%2Fbuyee.jp%2Frakuten%2Fshopping%2Fsearch%2Fcategory%2F0%3Fquery%3D" in rakuten_btn_uri
     assert "af%3Daff_id_999" in rakuten_btn_uri
     assert card1_buttons[2]["action"]["label"] == "前往 日本樂天 (全新品)"
 
@@ -381,4 +381,4 @@ def test_build_price_comparison_flex_with_affiliate_base_url():
     assert "https%3A%2F%2Fshopee.tw%2Fsearch%3Fkeyword%3D" in shopee_btn_uri
 
     assert taobao_btn_uri.startswith("https://track.taobao-affiliate.com/redirect?t=")
-    assert "https%3A%2F%2Fai.taobao.com%2Fsearch%2Findex.htm%3Fkey%3D" in taobao_btn_uri
+    assert "https%3A%2F%2Fmain.m.taobao.com%2Fsearch%2Findex.html%3Fq%3D" in taobao_btn_uri

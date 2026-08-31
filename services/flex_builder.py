@@ -22,9 +22,9 @@ TAOBAO_RED_ORANGE_COLOR = "#FF5000"  # Taobao official warm red-orange
 
 BUYEE_MERCARI_SEARCH_BASE_URL = "https://buyee.jp/mercari/search"
 BUYEE_YAHOO_SEARCH_BASE_URL = "https://buyee.jp/item/search/query"
-BUYEE_RAKUTEN_SEARCH_BASE_URL = "https://buyee.jp/rakuten/search"
+BUYEE_RAKUTEN_SEARCH_BASE_URL = "https://buyee.jp/rakuten/shopping/search/category/0"
 SHOPEE_SEARCH_BASE_URL = "https://shopee.tw/search"
-TAOBAO_SEARCH_BASE_URL = "https://ai.taobao.com/search/index.htm"
+TAOBAO_SEARCH_BASE_URL = "https://main.m.taobao.com/search/index.html"
 
 
 def build_buyee_yahoo_search_url(
@@ -58,7 +58,7 @@ def build_buyee_rakuten_search_url(
 ) -> str:
     """
     Construct Rakuten Japan search URL via Buyee for the given Japanese keyword.
-    Base format: https://buyee.jp/rakuten/search?keyword=<keyword_jp>
+    Base format: https://buyee.jp/rakuten/shopping/search/category/0?query=<keyword_jp>
     If affiliate_id is provided, appends 'af={affiliate_id}'.
     If affiliate_base_url is provided (or configured in environment/settings),
     wraps the target Rakuten search URL with URL-encoding into the redirect tracking format:
@@ -66,7 +66,7 @@ def build_buyee_rakuten_search_url(
     """
     clean_keyword = normalize_search_keyword(keyword_jp)
     encoded_keyword = urllib.parse.quote(clean_keyword)
-    base_search_url = f"{BUYEE_RAKUTEN_SEARCH_BASE_URL}?keyword={encoded_keyword}"
+    base_search_url = f"{BUYEE_RAKUTEN_SEARCH_BASE_URL}?query={encoded_keyword}"
 
     return append_affiliate_id(
         base_search_url,
@@ -108,15 +108,15 @@ def build_taobao_search_url(
     taobao_affiliate_base_url: Optional[str] = None,
 ) -> str:
     """
-    Construct Taobao search URL for the given Traditional Chinese keyword.
-    Base format: https://ai.taobao.com/search/index.htm?key=<keyword_zh>
+    Construct Taobao mobile (H5) search URL for the given Traditional Chinese keyword.
+    Base format: https://main.m.taobao.com/search/index.html?q=<keyword_zh>
     If taobao_affiliate_base_url is provided (or configured in environment/settings),
     wraps the target Taobao search URL with URL-encoding into the redirect tracking format:
     '{taobao_affiliate_base_url}?t={url_encoded_taobao_search_url}'.
     """
     clean_keyword = normalize_search_keyword(keyword_zh)
     encoded = urllib.parse.quote(clean_keyword)
-    base_search_url = f"{TAOBAO_SEARCH_BASE_URL}?key={encoded}"
+    base_search_url = f"{TAOBAO_SEARCH_BASE_URL}?q={encoded}"
 
     redirect_base = (
         taobao_affiliate_base_url
@@ -197,6 +197,24 @@ def build_keyword_flex_message(
     zh_kw = normalize_search_keyword(keyword_zh) if keyword_zh else (item_title or clean_keyword)
     shopee_url = build_shopee_search_url(zh_kw, shopee_affiliate_base_url=shopee_affiliate_base_url)
     taobao_url = build_taobao_search_url(zh_kw, taobao_affiliate_base_url=taobao_affiliate_base_url)
+
+    logger.info(
+        f"[Keyword Flex URLs Constructed]\n"
+        f"  Buyee Mercari: {final_buyee_url}\n"
+        f"  Buyee Yahoo:   {yahoo_url}\n"
+        f"  Buyee Rakuten: {rakuten_url}\n"
+        f"  Shopee:        {shopee_url}\n"
+        f"  Taobao:        {taobao_url}"
+    )
+    print(
+        f"[DEBUG] [Keyword Flex URLs Constructed]\n"
+        f"  Buyee Mercari: {final_buyee_url}\n"
+        f"  Buyee Yahoo:   {yahoo_url}\n"
+        f"  Buyee Rakuten: {rakuten_url}\n"
+        f"  Shopee:        {shopee_url}\n"
+        f"  Taobao:        {taobao_url}",
+        flush=True,
+    )
 
     hero_img = image_url or DEFAULT_PLACEHOLDER_IMAGE
 
@@ -458,6 +476,24 @@ def build_price_comparison_flex(
     clean_zh_kw = normalize_search_keyword(shopee_kw) or clean_jp_kw
     shopee_url = build_shopee_search_url(clean_zh_kw, shopee_affiliate_base_url=shopee_affiliate_base_url)
     taobao_url = build_taobao_search_url(clean_zh_kw, taobao_affiliate_base_url=taobao_affiliate_base_url)
+
+    logger.info(
+        f"[Price Comparison Flex URLs Constructed]\n"
+        f"  Buyee Mercari: {final_buyee_url}\n"
+        f"  Buyee Yahoo:   {yahoo_url}\n"
+        f"  Buyee Rakuten: {rakuten_url}\n"
+        f"  Shopee:        {shopee_url}\n"
+        f"  Taobao:        {taobao_url}"
+    )
+    print(
+        f"[DEBUG] [Price Comparison Flex URLs Constructed]\n"
+        f"  Buyee Mercari: {final_buyee_url}\n"
+        f"  Buyee Yahoo:   {yahoo_url}\n"
+        f"  Buyee Rakuten: {rakuten_url}\n"
+        f"  Shopee:        {shopee_url}\n"
+        f"  Taobao:        {taobao_url}",
+        flush=True,
+    )
 
     # Format values for display
     fb_price_str = (

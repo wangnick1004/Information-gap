@@ -231,7 +231,7 @@ def test_end_to_end_pipeline_with_affiliate_base_url(
         # Buyee Rakuten Button
         rakuten_uri = japan_buttons[2]["action"]["uri"]
         assert rakuten_uri.startswith("https://affiliate.example.com/redirect?t=")
-        assert "https%3A%2F%2Fbuyee.jp%2Frakuten%2Fsearch" in rakuten_uri
+        assert "https%3A%2F%2Fbuyee.jp%2Frakuten%2Fshopping%2Fsearch%2Fcategory%2F0%3Fquery%3D" in rakuten_uri
         assert "af%3Daff_123" in rakuten_uri
         assert japan_buttons[2]["action"]["label"] == "前往 日本樂天 (全新品)"
 
@@ -249,7 +249,7 @@ def test_end_to_end_pipeline_with_affiliate_base_url(
         # Taobao Button (with dynamic affiliate tracking redirect)
         taobao_uri = china_buttons[1]["action"]["uri"]
         assert taobao_uri.startswith("https://affiliate.taobao.example.com/click?t=")
-        assert "https%3A%2F%2Fai.taobao.com%2Fsearch%2Findex.htm%3Fkey%3D" in taobao_uri
+        assert "https%3A%2F%2Fmain.m.taobao.com%2Fsearch%2Findex.html%3Fq%3D" in taobao_uri
         assert china_buttons[1]["action"]["label"] == "前往 淘寶"
 
 
