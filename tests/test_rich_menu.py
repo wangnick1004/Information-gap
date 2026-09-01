@@ -54,7 +54,7 @@ def test_create_rich_menu_request_structure():
     assert a3.bounds.height == 472
     assert a3.action.type == "uri"
     assert a3.action.label == "Ezway認證"
-    assert "customs.gov.tw" in a3.action.uri
+    assert "https://web.customs.gov.tw/singlehtml/3150?cntId=cus1_3150_3150_1471" in a3.action.uri
 
     # Area 4 (Bottom-Left): 集運倉介紹 (x: 0, y: 472, width: 560, height: 472)
     a4 = request.areas[3]

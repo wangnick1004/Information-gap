@@ -65,7 +65,7 @@ DEFAULT_IMAGE_CANDIDATES = [
 
 DEFAULT_EZWAY_URL = os.getenv(
     "RICH_MENU_EZWAY_URL",
-    "https://web.customs.gov.tw/singlehtml/3150?cntId=cus1_3150_3150_1372",
+    "https://web.customs.gov.tw/singlehtml/3150?cntId=cus1_3150_3150_1471",
 )
 DEFAULT_SHIPPING_GUIDE_URL = os.getenv(
     "RICH_MENU_SHIPPING_GUIDE_URL",
