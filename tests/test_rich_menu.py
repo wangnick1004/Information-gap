@@ -28,14 +28,14 @@ def test_create_rich_menu_request_structure():
     # Areas count
     assert len(request.areas) == 6
 
-    # Area 1 (Top-Left): 一鍵尋寶體驗 (x: 0, y: 0, width: 560, height: 472)
+    # Area 1 (Top-Left): 一鍵尋寶體驗 (sends "Switch 2", x: 0, y: 0, width: 560, height: 472)
     a1 = request.areas[0]
     assert a1.bounds.x == 0
     assert a1.bounds.y == 0
     assert a1.bounds.width == 560
     assert a1.bounds.height == 472
     assert a1.action.type == "message"
-    assert a1.action.text == "一鍵尋寶體驗"
+    assert a1.action.text == "Switch 2"
 
     # Area 2 (Top-Center): 新手指南 (x: 560, y: 0, width: 560, height: 472)
     a2 = request.areas[1]

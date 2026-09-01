@@ -204,8 +204,8 @@ def test_webhook_rich_menu_disclaimer_command(mock_messaging_api_class, mock_api
 @patch("main.parse_fb_post")
 @patch("main.AsyncApiClient")
 @patch("main.AsyncMessagingApi")
-def test_webhook_rich_menu_random_demo(mock_messaging_api_class, mock_api_client_class, mock_parse, mock_scrape):
-    """Test '一鍵尋寶體驗' picks a hot keyword and prepends demo intro text."""
+def test_webhook_direct_keyword_search(mock_messaging_api_class, mock_api_client_class, mock_parse, mock_scrape):
+    """Test standard keyword search (such as menu button sending 'Switch 2') directly invokes search pipeline."""
     from services.parser import ParsedItem
     from services.scraper import ScrapingResult
 
@@ -243,7 +243,7 @@ def test_webhook_rich_menu_random_demo(mock_messaging_api_class, mock_api_client
                 "message": {
                     "type": "text",
                     "id": "100004",
-                    "text": "一鍵尋寶體驗",
+                    "text": "Switch 2",
                     "quoteToken": "quote123",
                 },
                 "timestamp": 1625641600000,

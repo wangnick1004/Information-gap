@@ -55,16 +55,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger("line_bot")
 
-# Rich Menu Hot Product Keywords for "一鍵尋寶體驗" Demo
-HOT_KEYWORDS = [
-    "Switch 2",
-    "薩爾達傳說 王國之淚",
-    "咒術迴戰 五條 手辦",
-    "Viscaria 桌球拍",
-    "CCD 數位相機",
-    "底片相機",
-]
-
 # Rich Menu Text Responses for Non-Search Commands
 GUIDE_RESPONSE_TEXT = (
     "📖 【新手指南】\n"
@@ -115,7 +105,7 @@ async def health_check() -> HealthResponse:
 async def handle_line_events(events: list, access_token: str) -> None:
     """
     Process incoming LINE webhook events with multimodal price comparison pipeline:
-    1. Check Rich Menu command router (新手指南, 平台比較與免責, 一鍵尋寶體驗).
+    1. Check Rich Menu command router (新手指南, 平台比較與免責).
     2. Extract text or fetch image bytes via LINE Blob API.
     3. Parse entities & generate Japanese search query with Gemini.
     4. Scrape real-time prices and thumbnail from Buyee Mercari.
@@ -165,11 +155,6 @@ async def handle_line_events(events: list, access_token: str) -> None:
                         )
                     )
                     continue
-
-                # 3. Random Search Demo Command
-                if user_text == "一鍵尋寶體驗":
-                    user_text = random.choice(HOT_KEYWORDS)
-                    logger.info(f"Triggered '一鍵尋寶體驗' demo search with keyword: '{user_text}'")
 
             elif isinstance(event.message, ImageMessageContent):
                 logger.info(f"Processing image message id={event.message.id} from user...")

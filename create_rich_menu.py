@@ -6,7 +6,7 @@ Layout:
 - Dimensions: 1680 x 944 (2 rows x 3 columns, each cell 560 x 472)
 - Areas & Actions:
   - Row 1 (Top, y: 0~472):
-      - Area 1 (Top-Left:   x: 0,    y: 0, width: 560, height: 472): MessageAction -> "一鍵尋寶體驗"
+      - Area 1 (Top-Left:   x: 0,    y: 0, width: 560, height: 472): MessageAction -> "Switch 2" (一鍵尋寶體驗)
       - Area 2 (Top-Center: x: 560,  y: 0, width: 560, height: 472): MessageAction -> "新手指南"
       - Area 3 (Top-Right:  x: 1120, y: 0, width: 560, height: 472): URIAction     -> "Ezway認證" (Customs URL)
   - Row 2 (Bottom, y: 472~944):
@@ -80,10 +80,10 @@ DEFAULT_SUPPORT_URL = os.getenv(
 def create_rich_menu_request() -> RichMenuRequest:
     """Build the 3x2 grid RichMenuRequest specification with exact bounding boxes and actions."""
     areas = [
-        # Area 1 (Top-Left): 一鍵尋寶體驗
+        # Area 1 (Top-Left): 一鍵尋寶體驗 (sends real search keyword "Switch 2")
         RichMenuArea(
             bounds=RichMenuBounds(x=0, y=0, width=COL_WIDTH, height=ROW_HEIGHT),
-            action=MessageAction(text="一鍵尋寶體驗", label="一鍵尋寶體驗"),
+            action=MessageAction(text="Switch 2", label="一鍵尋寶體驗"),
         ),
         # Area 2 (Top-Center): 新手指南
         RichMenuArea(
