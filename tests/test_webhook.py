@@ -270,10 +270,9 @@ def test_webhook_rich_menu_random_demo(mock_messaging_api_class, mock_api_client
 
     mock_api.reply_message.assert_called_once()
     req = mock_api.reply_message.call_args[0][0]
-    # Expect 2 messages: Demo Intro TextMessage + FlexMessage
-    assert len(req.messages) == 2
-    assert "🎲 為您示範熱門搜尋" in req.messages[0].text
-    assert req.messages[1].type == "flex"
+    # Expect 1 message: ONLY the resulting FlexMessage
+    assert len(req.messages) == 1
+    assert req.messages[0].type == "flex"
 
 
 def test_mangum_handler():
