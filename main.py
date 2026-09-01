@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 import random
@@ -31,6 +32,7 @@ from services.flex_builder import (
 # Alias FlexSendMessage and TextSendMessage for LINE SDK convention compatibility
 FlexSendMessage = FlexMessage
 TextSendMessage = TextMessage
+from services.cache import search_cache
 from services.parser import (
     GeminiAPIError,
     GeminiRateLimitError,
@@ -41,11 +43,16 @@ from services.parser import (
 )
 from services.pricing import PricingResult, calculate_landed_cost
 from services.scraper import (
+    CrossBorderSearchResult,
     ScrapingBlockedError,
     ScrapingError,
     ScrapingResult,
     ScrapingTimeoutError,
+    normalize_search_keyword,
     scrape_buyee_prices,
+    search_all_platforms_concurrently,
+    search_chinese_platforms,
+    search_taiwanese_platforms,
 )
 
 # Configure logging
@@ -260,28 +267,47 @@ async def handle_line_events(events: list, access_token: str) -> None:
                 # Unsupported message type (stickers, audio, etc.)
                 continue
 
-            # Step 0: Trigger LINE Loading Animation (typing indicator for user)
+            # Step 0: Trigger LINE Loading Animation immediately (typing indicator for user)
             user_id = getattr(event.source, "user_id", None)
             if user_id:
                 try:
                     await line_bot_api.show_loading_animation(
                         ShowLoadingAnimationRequest(
                             chat_id=user_id,
-                            loading_seconds=30,
+                            loading_seconds=60,
                         )
                     )
                     logger.debug(f"Triggered LINE loading animation for user {user_id}")
                 except Exception as anim_exc:
                     logger.debug(f"Failed to show loading animation (non-critical): {anim_exc}")
 
+            # Step 0.5: Check 1-hour TTL Cache for exact keyword search queries
+            cache_key = f"flex:{normalize_search_keyword(user_text)}" if user_text else None
+            if cache_key:
+                cached_data = search_cache.get(cache_key)
+                if cached_data and isinstance(cached_data, dict) and "flex_dict" in cached_data:
+                    logger.info(f"⚡ [Cache Hit] Instantly returning cached Flex Message for query: '{user_text}'")
+                    flex_container = FlexContainer.from_dict(cached_data["flex_dict"])
+                    reply_msg = FlexMessage(alt_text=cached_data.get("alt_text", "【比價分析】"), contents=flex_container)
+                    await line_bot_api.reply_message(
+                        ReplyMessageRequest(
+                            reply_token=event.reply_token,
+                            messages=[reply_msg],
+                        )
+                    )
+                    continue
+
             parsed_item: Optional[ParsedItem] = None
 
             try:
-                # Step 1: Multimodal Entity Extraction & Japanese Search Query Generation
+                # Step 1: Multimodal Entity Extraction & Japanese/Chinese Search Query Generation
                 parsed_item = await parse_fb_post(post_text=user_text, image_data=image_bytes)
 
-                # Step 2: Scrape Japanese Proxy Marketplace (Buyee Mercari)
-                scraper_result = await scrape_buyee_prices(parsed_item.search_query_ja)
+                # Step 2: Concurrently Search Japanese, Chinese, and Taiwanese platforms simultaneously
+                jp_task = scrape_buyee_prices(parsed_item.search_query_ja)
+                tw_task = search_taiwanese_platforms(parsed_item.keyword_zh)
+                cn_task = search_chinese_platforms(parsed_item.keyword_zh)
+                scraper_result, tw_result, cn_result = await asyncio.gather(jp_task, tw_task, cn_task)
 
                 # Step 3: Compute Landed Cost & Markup Analysis
                 fb_price = (
@@ -316,6 +342,10 @@ async def handle_line_events(events: list, access_token: str) -> None:
                     )
                 )
                 logger.info("Successfully replied with Flex Message comparison card.")
+
+                # Save successful result to 1-hour TTL cache
+                if cache_key:
+                    search_cache.set(cache_key, {"flex_dict": flex_dict, "alt_text": alt_text}, ttl=3600.0)
 
             except (ScrapingTimeoutError, ScrapingBlockedError, ScrapingError, IrrelevantPostError) as exc:
                 logger.warning(f"Scraping/Parsing fallback ({type(exc).__name__}): {exc}")
@@ -358,6 +388,10 @@ async def handle_line_events(events: list, access_token: str) -> None:
                         messages=[reply_msg],
                     )
                 )
+
+                # Cache keyword fallback card too
+                if cache_key:
+                    search_cache.set(cache_key, {"flex_dict": keyword_flex_dict, "alt_text": "比價成功，來去撈便宜～"}, ttl=3600.0)
 
             except GeminiServerError as exc:
                 logger.warning(f"Gemini server error (503 UNAVAILABLE): {exc}")

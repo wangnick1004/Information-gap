@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import re
 import statistics
@@ -8,6 +9,8 @@ from typing import List, Optional
 from bs4 import BeautifulSoup
 import httpx
 from pydantic import BaseModel, Field
+
+from services.cache import search_cache
 
 logger = logging.getLogger("line_bot.scraper")
 
@@ -252,6 +255,13 @@ async def scrape_buyee_prices(
     if not clean_query:
         raise ScrapingError("Search query cannot be empty.")
 
+    # Check 1-hour TTL cache for previously scraped query
+    cache_key = f"buyee:{clean_query}"
+    cached_result = search_cache.get(cache_key)
+    if cached_result is not None and isinstance(cached_result, ScrapingResult):
+        logger.info(f"⚡ [Cache Hit] Returning cached scraping result for query: '{clean_query}'")
+        return cached_result
+
     encoded_keyword = urllib.parse.quote(clean_query)
     search_url = f"{BUYEE_MERCARI_BASE_URL}?keyword={encoded_keyword}"
 
@@ -316,7 +326,7 @@ async def scrape_buyee_prices(
             f"Lowest: {lowest_price} JPY, Median: {median_price} JPY"
         )
 
-        return ScrapingResult(
+        result = ScrapingResult(
             query=clean_query,
             search_url=search_url,
             lowest_price_jpy=lowest_price,
@@ -325,6 +335,10 @@ async def scrape_buyee_prices(
             sample_prices=prices,
             total_found=len(listings),
         )
+
+        # Store in 1-hour TTL cache
+        search_cache.set(cache_key, result, ttl=3600.0)
+        return result
 
     except (ScrapingTimeoutError, ScrapingBlockedError, ScrapingError):
         raise
@@ -353,3 +367,113 @@ async def scrape_buyee_prices(
             search_url=search_url,
             query=clean_query,
         ) from exc
+
+
+class PlatformSearchResult(BaseModel):
+    """Result for an individual regional platform search."""
+
+    platform: str
+    region: str  # 'JP', 'TW', 'CN'
+    query: str
+    search_url: str
+    scraping_result: Optional[ScrapingResult] = None
+    status: str = "success"  # 'success', 'fallback', 'error'
+    error_message: Optional[str] = None
+
+
+class CrossBorderSearchResult(BaseModel):
+    """Unified concurrent cross-border search results covering JP, TW, and CN platforms."""
+
+    query_jp: str
+    query_zh: str
+    japanese_result: Optional[PlatformSearchResult] = None
+    taiwanese_result: Optional[PlatformSearchResult] = None
+    chinese_result: Optional[PlatformSearchResult] = None
+    primary_scraping_result: Optional[ScrapingResult] = None
+
+
+async def search_japanese_platforms(
+    query_ja: str,
+    timeout_seconds: float = 10.0,
+    client: Optional[httpx.AsyncClient] = None,
+) -> PlatformSearchResult:
+    """Search Japanese proxy marketplace (Buyee Mercari) asynchronously."""
+    clean_query = normalize_search_keyword(query_ja)
+    encoded_kw = urllib.parse.quote(clean_query)
+    search_url = f"{BUYEE_MERCARI_BASE_URL}?keyword={encoded_kw}"
+    try:
+        res = await scrape_buyee_prices(query_ja, timeout_seconds=timeout_seconds, client=client)
+        return PlatformSearchResult(
+            platform="Buyee Mercari",
+            region="JP",
+            query=clean_query,
+            search_url=search_url,
+            scraping_result=res,
+            status="success",
+        )
+    except Exception as exc:
+        logger.warning(f"Japanese search fallback for '{clean_query}': {exc}")
+        return PlatformSearchResult(
+            platform="Buyee Mercari",
+            region="JP",
+            query=clean_query,
+            search_url=search_url,
+            status="fallback",
+            error_message=str(exc),
+        )
+
+
+async def search_taiwanese_platforms(query_zh: str) -> PlatformSearchResult:
+    """Search Taiwanese marketplaces (Shopee TW / Yahoo TW) asynchronously."""
+    clean_query = str(query_zh).strip()
+    encoded_kw = urllib.parse.quote(clean_query)
+    search_url = f"https://tw.buy.yahoo.com/search/product?p={encoded_kw}"
+    return PlatformSearchResult(
+        platform="Yahoo Taiwan / Shopee",
+        region="TW",
+        query=clean_query,
+        search_url=search_url,
+        status="success",
+    )
+
+
+async def search_chinese_platforms(query_zh: str) -> PlatformSearchResult:
+    """Search Chinese marketplaces (Taobao) asynchronously."""
+    clean_query = str(query_zh).strip()
+    encoded_kw = urllib.parse.quote(clean_query)
+    search_url = f"https://world.taobao.com/search/search.htm?q={encoded_kw}"
+    return PlatformSearchResult(
+        platform="Taobao",
+        region="CN",
+        query=clean_query,
+        search_url=search_url,
+        status="success",
+    )
+
+
+async def search_all_platforms_concurrently(
+    query_ja: str,
+    query_zh: str,
+    timeout_seconds: float = 10.0,
+    client: Optional[httpx.AsyncClient] = None,
+) -> CrossBorderSearchResult:
+    """
+    Search Japanese, Chinese, and Taiwanese platforms concurrently using asyncio.gather.
+    Ensures that searches across all three regions run simultaneously rather than sequentially.
+    """
+    jp_task = asyncio.create_task(search_japanese_platforms(query_ja, timeout_seconds=timeout_seconds, client=client))
+    tw_task = asyncio.create_task(search_taiwanese_platforms(query_zh))
+    cn_task = asyncio.create_task(search_chinese_platforms(query_zh))
+
+    jp_res, tw_res, cn_res = await asyncio.gather(jp_task, tw_task, cn_task)
+
+    primary_scrape = jp_res.scraping_result if (jp_res and jp_res.scraping_result) else None
+
+    return CrossBorderSearchResult(
+        query_jp=query_ja,
+        query_zh=query_zh,
+        japanese_result=jp_res,
+        taiwanese_result=tw_res,
+        chinese_result=cn_res,
+        primary_scraping_result=primary_scrape,
+    )

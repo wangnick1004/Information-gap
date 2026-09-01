@@ -206,3 +206,50 @@ def test_normalize_rakuten_search_keyword():
     assert normalize_rakuten_search_keyword("") == ""
     assert normalize_rakuten_search_keyword(None) == ""
 
+
+@pytest.mark.anyio
+async def test_search_all_platforms_concurrently():
+    """Test that search_all_platforms_concurrently searches JP, TW, and CN platforms simultaneously."""
+    from services.scraper import search_all_platforms_concurrently, ScrapingResult
+    from services.cache import search_cache
+
+    search_cache.clear()
+
+    mock_html = """
+    <html>
+      <body>
+        <div class="itemCard">
+          <span class="itemCard__price">¥35,000</span>
+          <img data-src="https://example.com/switch2.jpg" />
+          <span class="itemCard__title">Nintendo Switch 2</span>
+        </div>
+      </body>
+    </html>
+    """
+    mock_response = httpx.Response(
+        status_code=200,
+        text=mock_html,
+        request=httpx.Request("GET", "https://buyee.jp/mercari/search"),
+    )
+
+    with patch("httpx.AsyncClient.get", new_callable=AsyncMock) as mock_get:
+        mock_get.return_value = mock_response
+
+        res = await search_all_platforms_concurrently(
+            query_ja="Switch 2",
+            query_zh="Switch 2",
+        )
+
+        assert res.query_jp == "Switch 2"
+        assert res.query_zh == "Switch 2"
+        assert res.japanese_result is not None
+        assert res.japanese_result.status == "success"
+        assert res.japanese_result.scraping_result.lowest_price_jpy == 35000.0
+        assert res.taiwanese_result is not None
+        assert res.taiwanese_result.status == "success"
+        assert "tw.buy.yahoo.com" in res.taiwanese_result.search_url
+        assert res.chinese_result is not None
+        assert res.chinese_result.status == "success"
+        assert "world.taobao.com" in res.chinese_result.search_url
+        assert res.primary_scraping_result is not None
+
