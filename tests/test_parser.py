@@ -466,7 +466,7 @@ async def test_parse_fb_post_generic_category_fallback():
 @pytest.mark.anyio
 async def test_parse_fb_post_empty_model_keywords_fallback():
     """Test that if model outputs empty keywords, it falls back to cleaned text without raising error."""
-    post_text = "底片相機"
+    post_text = "【出清】二手無名物品 100"
 
     mock_response = MagicMock()
     mock_response.text = json.dumps({
@@ -490,8 +490,8 @@ async def test_parse_fb_post_empty_model_keywords_fallback():
         result = await parse_fb_post(post_text, api_key="fake_api_key")
 
         assert isinstance(result, ParsedItem)
-        assert result.keyword_zh == "底片相機"
-        assert result.keyword_jp == "底片相機"
+        assert result.keyword_zh == "【出清】二手無名物品 100"
+        assert result.keyword_jp == "【出清】二手無名物品 100"
         assert result.is_anime_merch is True
 
 
@@ -531,7 +531,8 @@ async def test_parse_fb_post_fast_regex_bypass():
 
     # 3. Direct parse_fb_post bypass without API key
     res3 = await parse_fb_post("CCD 相機", api_key=None)
-    assert res3.search_query_ja == "CCD 相機"
+    assert res3.search_query_ja == "CCD カメラ"
+    assert res3.keyword_jp == "CCD カメラ"
 
 
 @pytest.mark.anyio
@@ -695,4 +696,48 @@ async def test_few_shot_cot_schema_with_reasoning():
         assert result.keyword_zh == "咒術迴戰 五條悟"
         assert result.search_query_ja == "呪術廻戦 五条悟"
         assert result.is_anime_merch is True
+
+
+@pytest.mark.anyio
+async def test_chinese_queries_must_translate_to_native_japanese():
+    """Test that Chinese queries are not blindly echoed to jp_keyword, but translated to native Japanese."""
+    from services.parser import fast_regex_parse
+
+    # 1. Non-ASCII / Chinese queries NOT in custom dictionary return None from fast_regex_parse
+    # so they are forced into the LLM pipeline
+    assert fast_regex_parse("未知的中文商品名稱") is None
+
+    # 2. Anime titles in custom dictionary map directly to native Japanese
+    res_jujutsu = fast_regex_parse("咒術迴戰")
+    assert res_jujutsu is not None
+    assert res_jujutsu.keyword_jp == "呪術廻戦"
+    assert res_jujutsu.keyword_zh == "咒術迴戰"
+
+    res_wind = fast_regex_parse("防風少年")
+    assert res_wind is not None
+    assert res_wind.keyword_jp == "WIND BREAKER"
+    assert res_wind.keyword_zh == "防風少年"
+
+    # 3. LLM Translation for unmapped Chinese queries
+    with patch("services.parser.genai.Client") as mock_client_class:
+        mock_client = MagicMock()
+        mock_client_class.return_value = mock_client
+        mock_chat = MagicMock()
+        mock_client.aio.chats.create.return_value = mock_chat
+
+        expected_llm = {
+            "reasoning": "Manga title translated to Japanese.",
+            "zh_keyword": "藍色監獄",
+            "jp_keyword": "ブルーロック",
+            "fb_price_twd": None,
+            "is_anime_merch": True,
+        }
+        mock_resp = MagicMock()
+        mock_resp.text = json.dumps(expected_llm)
+        mock_chat.send_message = AsyncMock(return_value=mock_resp)
+
+        result = await parse_fb_post("藍色監獄", api_key="fake_key")
+        assert result.keyword_jp == "ブルーロック"
+        assert result.keyword_zh == "藍色監獄"
+        assert result.search_query_ja == "ブルーロック"
 

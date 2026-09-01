@@ -260,12 +260,20 @@ CUSTOM_KEYWORDS = {
     "伏黑": "伏黒恵",
     "宿儺": "両面宿儺",
     "排少": "ハイキュー!!",
+    "排球少年": "ハイキュー!!",
     "日向": "日向翔陽",
     "影山": "影山飛雄",
     "研磨": "孤爪研磨",
     "月島": "月島蛍",
     "及川": "及川徹",
     "咒術": "呪術廻戦",
+    "咒術迴戰": "呪術廻戦",
+    "防風少年": "WIND BREAKER",
+    "鬼滅之刃": "鬼滅の刃",
+    "進擊的巨人": "進撃の巨人",
+    "間諜家家酒": "SPY×FAMILY",
+    "葬送的芙莉蓮": "葬送のフリーレン",
+    "我推的孩子": "【推しの子】",
     "王國之淚": "ゼルダの伝説 ティアーズ オブ ザ キングダム",
     "曠野之息": "ゼルダの伝説 ブレス オブ ザ ワイルド",
     "re:0": "Re:ゼロから始める異世界生活",
@@ -273,6 +281,9 @@ CUSTOM_KEYWORDS = {
     "從零開始": "Re:ゼロから始める異世界生活",
     "botw": "ゼルダの伝説 ブレス オブ ザ ワイルド",
     "totk": "ゼルダの伝説 ティアーズ オブ ザ キングダム",
+    "ccd 相機": "CCD カメラ",
+    "ccd 數位相機": "CCD デジカメ",
+    "底片相機": "フィルムカメラ",
 }
 
 
@@ -289,14 +300,24 @@ Output: {"reasoning": "Taiwanese table tennis slang for the Butterfly Viscaria b
 User: '五條'
 Output: {"reasoning": "Refers to Satoru Gojo from the anime Jujutsu Kaisen.", "zh_keyword": "咒術迴戰 五條悟", "jp_keyword": "呪術廻戦 五条悟"}
 
+User: '咒術迴戰'
+Output: {"reasoning": "Popular anime series Jujutsu Kaisen, translated to official Japanese kanji.", "zh_keyword": "咒術迴戰", "jp_keyword": "呪術廻戦"}
+
+User: '防風少年'
+Output: {"reasoning": "Manga/anime series WIND BREAKER, official Japanese title is in English/Katakana.", "zh_keyword": "防風少年", "jp_keyword": "WIND BREAKER"}
+
 Your primary objective is to act as a precision translator and query perfecter for cross-border shopping. When you receive a search query:
 1. COLLOQUIAL TERMS: First, check if the user is using a Taiwanese colloquial product name or slang (e.g., '蝴蝶王', '小香', '金標', '水鬼'). If so, translate it to the OFFICIAL Japanese product name (e.g., 'ビスカリア', 'シャネル', 'ビスカリア ゴールデン', 'サブマリーナー') for Japanese platforms.
 2. ABBREVIATIONS & SHORTHAND: Identify if the query is an abbreviation or shorthand for a well-known product, anime, game, or brand (e.g., 're:0' for 'Re:從零開始的異世界生活', 'botw' for '薩爾達傳說 曠野之息', 'totk' for '薩爾達傳說 王國之淚', '排少' for '排球少年!!'). You MUST automatically complete these abbreviations to their OFFICIAL and FULL titles in both Japanese (e.g., 'Re:ゼロから始める異世界生活') and Chinese (e.g., 'Re:從零開始的異世界生活').
 3. OUTPUT: Always provide the perfected FULL, OFFICIAL product title for the 'Identified Product' field, and the translated official Japanese keywords for the 'Japanese Keywords' field, ensuring that searching with these results on their respective platforms will yield the most accurate and abundant results.
 
+### CRITICAL TRANSLATION CONSTRAINTS:
+- **CRITICAL RULE: The `jp_keyword` field MUST ALWAYS be translated into authentic, native Japanese used on e-commerce sites. NEVER output Traditional Chinese in the `jp_keyword` field. For anime/manga titles, you MUST use the official Japanese title (e.g., User: '咒術迴戰' -> jp_keyword: '呪術廻戦', User: '防風少年' -> jp_keyword: 'WIND BREAKER').**
+- For Japanese e-commerce (Mercari, Yahoo Auctions Japan, Buyee, Rakuten), Japanese buyers and sellers search in Japanese Kanji, Katakana, Hiragana, or official English titles. Traditional Chinese characters (such as 迴, 戰, 拍, 機, 筆, 錶) do NOT match Japanese listings.
+
 ### STRICT RULES FOR KEYWORD GENERATION (`keyword_jp` & `keyword_zh`):
-1. **Simplicity & Official Names**:
-   - Provide the complete, official title used by native sellers on e-commerce platforms.
+1. **Authentic Native Japanese**:
+   - Translate all Chinese words/titles into their official Japanese counterparts (e.g., '桌球拍' -> '卓球ラケット', '底片相機' -> 'フィルムカメラ', '咒術迴戰' -> '呪術廻戦', '防風少年' -> 'WIND BREAKER').
 2. **No Filler Words**:
    - NEVER add qualifiers, generic categorizations, or redundant parent company words (e.g., do NOT add "本體", "機", "主機", "equipment", "device" unless part of the official model name).
 3. **Preserve Global Brands & English Tech Terms**:
@@ -327,14 +348,14 @@ Your primary objective is to act as a precision translator and query perfecter f
 
 2. **Entity Extraction Rules**:
    - `reasoning`: Brief step-by-step CoT reasoning explaining the product/abbreviation.
-   - `franchise`: Official Brand, Manufacturer, or IP Franchise Name (e.g., 'Re:ゼロから始める異世界生活', 'Sony', '任天堂', 'ハイキュー!!', 'Pokemon').
-   - `character`: Model Name, Specific Product Name, Character, or Sub-line (e.g., 'エミリア', 'レム', 'WH-1000XM5', 'Switch 2', 'ビスカリア', '影山飛雄', 'リザードン').
+   - `franchise`: Official Brand, Manufacturer, or IP Franchise Name (e.g., '呪術廻戦', 'Re:ゼロから始める異世界生活', 'Sony', '任天堂', 'ハイキュー!!', 'Pokemon').
+   - `character`: Model Name, Specific Product Name, Character, or Sub-line (e.g., '五条悟', 'エミリア', 'レム', 'WH-1000XM5', 'Switch 2', 'ビスカリア', '影山飛雄', 'リザードン').
    - `item_type`: Product Category in standard Japanese/Chinese (e.g., ヘッドホン, バドミントンラケット, ミラーレス一眼カメラ, スニーカー, 缶バッジ, フィギュア, トレカ).
    - `year_or_edition`: Generation, version, or year if it is critical for distinguishing the product (e.g., Mark II, Gen 2, 2024).
 
 3. **Search Query Construction**:
-   - `keyword_jp` / `jp_keyword`: Core perfected official Japanese product identifier (e.g., 'Re:ゼロから始める異世界生活', 'Switch 2', 'Sony WH-1000XM5', 'ビスカリア', '卓球ラケット').
-   - `keyword_zh` / `zh_keyword`: Core perfected official Traditional Chinese product identifier (e.g., 'Re:從零開始的異世界生活', 'Switch 2', 'Sony WH-1000XM5', '蝴蝶王', '桌球拍').
+   - `keyword_jp` / `jp_keyword`: Core perfected official Japanese product identifier (e.g., '呪術廻戦', 'WIND BREAKER', 'Re:ゼロから始める異世界生活', 'Switch 2', 'Sony WH-1000XM5', 'ビスカリア', '卓球ラケット').
+   - `keyword_zh` / `zh_keyword`: Core perfected official Traditional Chinese product identifier (e.g., '咒術迴戰', '防風少年', 'Re:從零開始的異世界生活', 'Switch 2', 'Sony WH-1000XM5', '蝴蝶王', '桌球拍').
    - Keep global brand names (e.g., Sony, Yonex, Canon, Apple, Nike, Switch) in standard Latin form.
 
 4. **Price Extraction (`fb_price_twd`)**:
@@ -349,7 +370,9 @@ Your primary objective is to act as a precision translator and query perfecter f
 def fast_regex_parse(text: str) -> Optional[ParsedItem]:
     """
     Ultra-low latency (< 0.1ms) regex entity extraction for standard clean product queries.
-    Bypasses LLM overhead for direct queries (e.g., 'Switch 2', 'PS5', 'Nikon Zfc', 'CCD 相機', '底片相機', 'Viscaria 桌球拍', '蝴蝶王').
+    Bypasses LLM overhead for direct queries in CUSTOM_KEYWORDS (e.g., '蝴蝶王', '小香', 're:0', 'botw')
+    or pure ASCII/Latin brand model codes (e.g., 'Switch 2', 'PS5', 'Nikon Zfc', 'WH-1000XM5').
+    Any non-ASCII/Chinese/Kanji text NOT in CUSTOM_KEYWORDS is passed to Gemini for translation.
     """
     if not text:
         return None
@@ -358,7 +381,7 @@ def fast_regex_parse(text: str) -> Optional[ParsedItem]:
     if not clean or len(clean) > 40:
         return None
 
-    # Check Custom Colloquialism & Shorthand Dictionary match first (case-insensitive)
+    # 1. Check Custom Colloquialism & Shorthand Dictionary match first (case-insensitive)
     clean_lower = clean.lower()
     for custom_k, custom_v in CUSTOM_KEYWORDS.items():
         if clean_lower == custom_k.lower():
@@ -373,29 +396,31 @@ def fast_regex_parse(text: str) -> Optional[ParsedItem]:
                 is_anime_merch=True,
             )
 
-    # Skip fast-path if text contains trading verbs, conditions, or conversational tokens
+    # 2. Skip fast-path if text contains trading verbs, conditions, or conversational tokens
     trading_and_chat_pattern = r"(?:^[\[【]?(?:售|出|買|賣|徵|求|換|問|推|換|出清)[\]】]?)|(?:推薦|請問|多少|好用|二手|九成新|成新|面交|郵寄|綁|私訊|放行|保固|正版|代理)"
     if re.search(trading_and_chat_pattern, clean):
         return None
 
-    # Skip if contains sentence punctuation or newlines
+    # 3. Skip if contains sentence punctuation or newlines
     if re.search(r"[,，。！？!?\n\r:：【】\[\]()（）/／]", clean):
         return None
 
-    norm_kw = normalize_search_keyword(clean)
-    if len(norm_kw) >= 2:
-        # Check if mapped in CUSTOM_KEYWORDS
-        jp_term = CUSTOM_KEYWORDS.get(norm_kw.lower(), CUSTOM_KEYWORDS.get(norm_kw, norm_kw))
-        return ParsedItem(
-            franchise=norm_kw,
-            character="",
-            item_type="商品",
-            keyword_jp=jp_term,
-            keyword_zh=norm_kw,
-            search_query_ja=jp_term,
-            fb_price_twd=None,
-            is_anime_merch=True,
-        )
+    # 4. Only bypass LLM for pure Latin/ASCII/numeric brand & model identifiers (e.g. 'Switch 2', 'PS5', 'Sony WH-1000XM5')
+    # If the text contains Chinese/Kanji/non-ASCII characters and was not in CUSTOM_KEYWORDS, it MUST go to Gemini for Japanese translation.
+    is_pure_latin_ascii = bool(re.match(r"^[A-Za-z0-9\s\-+._]+$", clean))
+    if is_pure_latin_ascii:
+        norm_kw = normalize_search_keyword(clean)
+        if len(norm_kw) >= 2:
+            return ParsedItem(
+                franchise=norm_kw,
+                character="",
+                item_type="商品",
+                keyword_jp=norm_kw,
+                keyword_zh=norm_kw,
+                search_query_ja=norm_kw,
+                fb_price_twd=None,
+                is_anime_merch=True,
+            )
 
     return None
 
