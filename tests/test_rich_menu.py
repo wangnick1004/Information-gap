@@ -71,8 +71,8 @@ def test_create_rich_menu_request_structure():
     assert a5.bounds.y == 472
     assert a5.bounds.width == 560
     assert a5.bounds.height == 472
-    assert a5.action.type == "uri"
-    assert a5.action.label == "客服與回報"
+    assert a5.action.type == "message"
+    assert a5.action.text == "客服與回報"
 
     # Area 6 (Bottom-Right): 平台比較與免責 (x: 1120, y: 472, width: 560, height: 472)
     a6 = request.areas[5]

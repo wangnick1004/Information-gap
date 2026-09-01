@@ -249,6 +249,57 @@ def test_webhook_rich_menu_shipping_guide_command(mock_messaging_api_class, mock
     assert "【集貨倉是什麼？】" in req.messages[0].text
 
 
+@patch("main.AsyncApiClient")
+@patch("main.AsyncMessagingApi")
+def test_webhook_rich_menu_feedback_command(mock_messaging_api_class, mock_api_client_class):
+    """Test '客服與回報' interceptor returns feedback form & contact text and bypasses search."""
+    mock_api = AsyncMock()
+    mock_messaging_api_class.return_value = mock_api
+
+    secret = "test_secret_123"
+    token = "test_token_456"
+
+    payload = {
+        "destination": "U1234567890",
+        "events": [
+            {
+                "type": "message",
+                "message": {
+                    "type": "text",
+                    "id": "100006",
+                    "text": "客服與回報",
+                    "quoteToken": "quote123",
+                },
+                "timestamp": 1625641600000,
+                "source": {"type": "user", "userId": "Uuser123"},
+                "replyToken": "token_feedback_123",
+                "mode": "active",
+                "webhookEventId": "01FZ74A0TDDPYRVKNK77XKC3ZR",
+                "deliveryContext": {"isRedelivery": False},
+            }
+        ],
+    }
+    body_str = json.dumps(payload)
+    signature = generate_signature(secret, body_str)
+
+    with patch.object(settings, "line_channel_secret", secret), \
+         patch.object(settings, "line_channel_access_token", token):
+
+        response = client.post(
+            "/api/webhook",
+            content=body_str,
+            headers={"Content-Type": "application/json", "X-Line-Signature": signature},
+        )
+        assert response.status_code == 200
+
+    mock_api.reply_message.assert_called_once()
+    req = mock_api.reply_message.call_args[0][0]
+    assert len(req.messages) == 1
+    assert "【客服與問題回報】" in req.messages[0].text
+    assert "forms.gle" in req.messages[0].text
+    assert "weiwei33442@gmail.com" in req.messages[0].text
+
+
 @patch("main.scrape_buyee_prices")
 @patch("main.parse_fb_post")
 @patch("main.AsyncApiClient")

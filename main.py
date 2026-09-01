@@ -88,6 +88,15 @@ SHIPPING_GUIDE_RESPONSE_TEXT = (
     "• 包稅服務：單次逾2000元或半年進口逾6次會被課稅，選「包稅航線」被抽到關稅將由集運商全額吸收。"
 )
 
+FEEDBACK_RESPONSE_TEXT = (
+    "🛠️ 【客服與問題回報】\n"
+    "哎呀，機器人出錯了嗎？或是您有任何新功能建議？\n\n"
+    "請點擊下方表單告訴我們，這會幫助系統變得更好！\n"
+    "👉https://forms.gle/4ACKqFQWE1xQjexG7\n\n"
+    "如有緊急合作或建議，也歡迎直接來信：\n"
+    "✉️weiwei33442@gmail.com"
+)
+
 # FastAPI Application Initialization
 app = FastAPI(
     title="Line E-Commerce Price Comparison Bot",
@@ -125,7 +134,7 @@ async def health_check() -> HealthResponse:
 async def handle_line_events(events: list, access_token: str) -> None:
     """
     Process incoming LINE webhook events with multimodal price comparison pipeline:
-    1. Check Rich Menu command router (新手指南, 平台比較與免責, 集運倉介紹).
+    1. Check Rich Menu command router (新手指南, 平台比較與免責, 集運倉介紹, 客服與回報).
     2. Extract text or fetch image bytes via LINE Blob API.
     3. Parse entities & generate Japanese search query with Gemini.
     4. Scrape real-time prices and thumbnail from Buyee Mercari.
@@ -183,6 +192,17 @@ async def handle_line_events(events: list, access_token: str) -> None:
                         ReplyMessageRequest(
                             reply_token=event.reply_token,
                             messages=[TextMessage(text=SHIPPING_GUIDE_RESPONSE_TEXT)],
+                        )
+                    )
+                    continue
+
+                # 4. Customer Support and Feedback Command
+                if user_text in ("客服與回報", "客服與問題回報"):
+                    logger.info("Handling '客服與回報' rich menu command.")
+                    await line_bot_api.reply_message(
+                        ReplyMessageRequest(
+                            reply_token=event.reply_token,
+                            messages=[TextMessage(text=FEEDBACK_RESPONSE_TEXT)],
                         )
                     )
                     continue
