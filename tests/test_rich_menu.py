@@ -62,9 +62,8 @@ def test_create_rich_menu_request_structure():
     assert a4.bounds.y == 472
     assert a4.bounds.width == 560
     assert a4.bounds.height == 472
-    assert a4.action.type == "uri"
-    assert a4.action.label == "集運倉介紹"
-    assert "shipping-fees" in a4.action.uri
+    assert a4.action.type == "message"
+    assert a4.action.text == "集運倉介紹"
 
     # Area 5 (Bottom-Center): 客服與回報 (x: 560, y: 472, width: 560, height: 472)
     a5 = request.areas[4]

@@ -10,7 +10,7 @@ Layout:
       - Area 2 (Top-Center: x: 560,  y: 0, width: 560, height: 472): MessageAction -> "新手指南"
       - Area 3 (Top-Right:  x: 1120, y: 0, width: 560, height: 472): URIAction     -> "Ezway認證" (Customs URL)
   - Row 2 (Bottom, y: 472~944):
-      - Area 4 (Bottom-Left:   x: 0,    y: 472, width: 560, height: 472): URIAction     -> "集運倉介紹" (Shipping Guide URL)
+      - Area 4 (Bottom-Left:   x: 0,    y: 472, width: 560, height: 472): MessageAction -> "集運倉介紹"
       - Area 5 (Bottom-Center: x: 560,  y: 472, width: 560, height: 472): URIAction     -> "客服與回報" (Customer Support URL)
       - Area 6 (Bottom-Right:  x: 1120, y: 472, width: 560, height: 472): MessageAction -> "平台比較與免責"
 
@@ -98,7 +98,7 @@ def create_rich_menu_request() -> RichMenuRequest:
         # Area 4 (Bottom-Left): 集運倉介紹
         RichMenuArea(
             bounds=RichMenuBounds(x=0, y=ROW_HEIGHT, width=COL_WIDTH, height=ROW_HEIGHT),
-            action=URIAction(uri=DEFAULT_SHIPPING_GUIDE_URL, label="集運倉介紹"),
+            action=MessageAction(text="集運倉介紹", label="集運倉介紹"),
         ),
         # Area 5 (Bottom-Center): 客服與回報
         RichMenuArea(

@@ -75,6 +75,19 @@ DISCLAIMER_RESPONSE_TEXT = (
     "本服務僅提供關鍵字翻譯與網址重組，不涉入平台交易糾紛。"
 )
 
+SHIPPING_GUIDE_RESPONSE_TEXT = (
+    "📦 【集貨倉是什麼？】\n"
+    "集貨倉就像海外的「代收管理員」。能幫你把不同賣家的包裹，合併打包成一大箱寄回台灣，大幅節省國際運費！\n\n"
+    "🇯🇵 【日拍集運重點 (日雅/Mercari)】\n"
+    "• 材積陷阱：日本空運極重視「材積重」(體積大運費就貴)。老手必找提供「免費去外箱」的集運商來省錢。\n"
+    "• 安全加固：購買絕版相機、CCD 或高價桌球拍，務必加購防撞驗貨服務。\n"
+    "• 隱藏成本：下單前留意賣家有無收取「日本境內運費」。\n\n"
+    "🇨🇳 【中國集運重點 (淘寶/京東)】\n"
+    "• 普特貨分流：衣服是普貨；含鋰電池(如Switch手把)、藍牙或液體是「特貨」，須走專屬航班，報錯會被海關重罰！\n"
+    "• 運送選擇：急用選空運(3-5天)；買機車耗材或大型傢俱選海運(7-14天)最划算。\n"
+    "• 包稅服務：單次逾2000元或半年進口逾6次會被課稅，選「包稅航線」被抽到關稅將由集運商全額吸收。"
+)
+
 # FastAPI Application Initialization
 app = FastAPI(
     title="Line E-Commerce Price Comparison Bot",
@@ -112,7 +125,7 @@ async def health_check() -> HealthResponse:
 async def handle_line_events(events: list, access_token: str) -> None:
     """
     Process incoming LINE webhook events with multimodal price comparison pipeline:
-    1. Check Rich Menu command router (新手指南, 平台比較與免責).
+    1. Check Rich Menu command router (新手指南, 平台比較與免責, 集運倉介紹).
     2. Extract text or fetch image bytes via LINE Blob API.
     3. Parse entities & generate Japanese search query with Gemini.
     4. Scrape real-time prices and thumbnail from Buyee Mercari.
@@ -159,6 +172,17 @@ async def handle_line_events(events: list, access_token: str) -> None:
                         ReplyMessageRequest(
                             reply_token=event.reply_token,
                             messages=[TextMessage(text=DISCLAIMER_RESPONSE_TEXT)],
+                        )
+                    )
+                    continue
+
+                # 3. Shipping Guide Command
+                if user_text in ("集運倉介紹", "集貨倉介紹"):
+                    logger.info("Handling '集運倉介紹' rich menu command.")
+                    await line_bot_api.reply_message(
+                        ReplyMessageRequest(
+                            reply_token=event.reply_token,
+                            messages=[TextMessage(text=SHIPPING_GUIDE_RESPONSE_TEXT)],
                         )
                     )
                     continue
