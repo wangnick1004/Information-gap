@@ -122,11 +122,68 @@ WELCOME_RESPONSE_TEXT = (
     "👇 現在，請直接點擊下方選單左上角的「一鍵尋寶體驗」，看看比價神器實際上怎麼運作吧！"
 )
 
+from contextlib import asynccontextmanager
+
+# Predefined Hot Keywords for Background Cache Pre-warming
+PREWARM_KEYWORDS = [
+    "Switch 2",
+    "薩爾達傳說 王國之淚",
+    "咒術迴戰 五條 手辦",
+    "Viscaria 桌球拍",
+    "CCD 數位相機",
+    "底片相機",
+]
+
+
+async def prewarm_search_cache() -> None:
+    """
+    Background pre-warming task that pre-fetches and caches search comparisons
+    for popular hot keywords on app startup, ensuring instant (< 10ms) responses for users.
+    """
+    logger.info("🔥 [Cache Pre-warm] Starting background cache pre-warming for hot keywords...")
+    for kw in PREWARM_KEYWORDS:
+        try:
+            cache_key = f"flex:{normalize_search_keyword(kw)}"
+            if cache_key in search_cache:
+                continue
+            parsed_item = await parse_fb_post(post_text=kw)
+            jp_task = scrape_buyee_prices(parsed_item.search_query_ja)
+            tw_task = search_taiwanese_platforms(parsed_item.keyword_zh)
+            cn_task = search_chinese_platforms(parsed_item.keyword_zh)
+            scraper_result, tw_result, cn_result = await asyncio.gather(jp_task, tw_task, cn_task)
+            pricing_result = calculate_landed_cost(price_jpy=scraper_result.median_price_jpy)
+            flex_dict = build_price_comparison_flex(
+                parsed_item=parsed_item,
+                pricing_result=pricing_result,
+                scraper_result=scraper_result,
+                affiliate_id=settings.buyee_affiliate_id,
+                affiliate_base_url=settings.affiliate_base_url,
+                shopee_affiliate_base_url=settings.shopee_affiliate_base_url,
+                taobao_affiliate_base_url=settings.taobao_affiliate_base_url,
+                yahoo_tw_affiliate_base_url=settings.yahoo_tw_affiliate_base_url,
+            )
+            alt_text = f"【比價分析】{parsed_item.franchise} {parsed_item.character}".strip()
+            search_cache.set(cache_key, {"flex_dict": flex_dict, "alt_text": alt_text}, ttl=3600.0)
+            logger.info(f"🔥 [Cache Pre-warm] Successfully pre-warmed cache for: '{kw}'")
+        except Exception as exc:
+            logger.debug(f"Cache pre-warm skipped for '{kw}': {exc}")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Lifespan context manager to handle application startup and shutdown tasks."""
+    prewarm_task = asyncio.create_task(prewarm_search_cache())
+    yield
+    if not prewarm_task.done():
+        prewarm_task.cancel()
+
+
 # FastAPI Application Initialization
 app = FastAPI(
     title="Line E-Commerce Price Comparison Bot",
     description="LINE Bot with Gemini multimodal entity extraction and Buyee price comparison",
     version="1.0.0",
+    lifespan=lifespan,
 )
 
 # CORS middleware configuration

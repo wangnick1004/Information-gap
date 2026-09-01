@@ -1,4 +1,5 @@
 import time
+import pytest
 from services.cache import TTLCache
 
 
@@ -47,3 +48,35 @@ def test_ttl_cache_delete_and_clear():
     cache.clear()
     assert len(cache) == 0
     assert cache.get("k2") is None
+
+
+@pytest.mark.anyio
+async def test_prewarm_search_cache():
+    """Test background cache pre-warming populates hot keywords into search_cache."""
+    from unittest.mock import AsyncMock, patch
+    from services.cache import search_cache
+    from services.scraper import ScrapingResult
+    from main import prewarm_search_cache
+
+    search_cache.clear()
+
+    mock_scrape = AsyncMock(
+        return_value=ScrapingResult(
+            query="SWITCH 2",
+            search_url="https://buyee.jp/mercari/search?keyword=SWITCH2",
+            lowest_price_jpy=40000.0,
+            median_price_jpy=45000.0,
+            representative_image_url="https://example.com/switch2.jpg",
+            sample_prices=[40000.0, 45000.0],
+            total_found=2,
+        )
+    )
+
+    with patch("main.scrape_buyee_prices", mock_scrape):
+        await prewarm_search_cache()
+
+    # Check that hot keywords were pre-warmed into the cache
+    assert "flex:SWITCH 2" in search_cache
+    cached_entry = search_cache.get("flex:SWITCH 2")
+    assert cached_entry is not None
+    assert "flex_dict" in cached_entry

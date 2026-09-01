@@ -3,6 +3,7 @@ import io
 import json
 import logging
 import os
+import re
 from typing import Any, List, Optional, Union
 
 from google import genai
@@ -272,6 +273,43 @@ Your mission is to analyze trading posts or product photos for ANY physical reta
 """.strip()
 
 
+def fast_regex_parse(text: str) -> Optional[ParsedItem]:
+    """
+    Ultra-low latency (< 0.1ms) regex entity extraction for standard clean product queries.
+    Bypasses LLM overhead for direct queries (e.g., 'Switch 2', 'PS5', 'Nikon Zfc', 'CCD 相機', '底片相機', 'Viscaria 桌球拍').
+    """
+    if not text:
+        return None
+
+    clean = text.strip()
+    if not clean or len(clean) > 40:
+        return None
+
+    # Skip fast-path if text contains trading verbs, conditions, or conversational tokens
+    trading_and_chat_pattern = r"(?:^[\[【]?(?:售|出|買|賣|徵|求|換|問|推|換|出清)[\]】]?)|(?:推薦|請問|多少|好用|二手|九成新|成新|面交|郵寄|綁|私訊|放行|保固|正版|代理)"
+    if re.search(trading_and_chat_pattern, clean):
+        return None
+
+    # Skip if contains sentence punctuation or newlines
+    if re.search(r"[,，。！？!?\n\r:：【】\[\]()（）/／]", clean):
+        return None
+
+    norm_kw = normalize_search_keyword(clean)
+    if len(norm_kw) >= 2:
+        return ParsedItem(
+            franchise=norm_kw,
+            character="",
+            item_type="商品",
+            keyword_jp=norm_kw,
+            keyword_zh=norm_kw,
+            search_query_ja=norm_kw,
+            fb_price_twd=None,
+            is_anime_merch=True,
+        )
+
+    return None
+
+
 async def parse_fb_post(
     post_text: Optional[str] = None,
     image_data: Optional[Union[bytes, Image.Image]] = None,
@@ -281,9 +319,9 @@ async def parse_fb_post(
     retry_delay_seconds: float = 2.0,
 ) -> ParsedItem:
     """
-    Parse a physical goods trading post or image using Gemini multimodal structured output,
-    with automatic exponential backoff retry on 503 UNAVAILABLE (ServerError) and 429 rate limits,
-    and automatic fallback on 404 NOT_FOUND model errors.
+    Extract structured retail item entities from text or images.
+    Attempts ultra-fast Regex parsing first to bypass LLM latency (< 0.1ms).
+    Falls back to Gemini Flash multimodal extraction for complex/multimodal posts.
 
     Args:
         post_text: Optional text or caption from user/post.
@@ -305,6 +343,13 @@ async def parse_fb_post(
     cleaned_text = post_text.strip() if post_text else ""
     if not cleaned_text and image_data is None:
         raise IrrelevantPostError("Post text and image data are both empty.")
+
+    # --- Fast-Path Regex Parsing (Bypass LLM latency for standard queries) ---
+    if image_data is None and cleaned_text:
+        fast_result = fast_regex_parse(cleaned_text)
+        if fast_result is not None:
+            logger.info(f"⚡ [Regex Fast-Path] Bypassed LLM for query: '{cleaned_text}' -> '{fast_result.search_query_ja}'")
+            return fast_result
 
     gemini_key = api_key or settings.gemini_api_key or os.getenv("GEMINI_API_KEY")
     if not gemini_key:

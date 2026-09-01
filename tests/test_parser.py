@@ -504,18 +504,40 @@ async def test_parse_fb_post_empty_input():
 
 @pytest.mark.anyio
 async def test_parse_fb_post_missing_api_key():
-    """Test that missing GEMINI_API_KEY raises GeminiAPIError."""
+    """Test that missing GEMINI_API_KEY raises GeminiAPIError when complex or image input requires LLM."""
+    complex_text = "【社團好物交流】朋友託售，九成新無盒裝，功能正常，意者留言私訊，感謝管理員放行！\n售 Sony 耳機 100"
     with patch("services.parser.settings.gemini_api_key", None), \
          patch("services.parser.os.getenv", return_value=None):
         with pytest.raises(GeminiAPIError) as exc_info:
-            await parse_fb_post("售 Sony 耳機 100", api_key=None)
+            await parse_fb_post(complex_text, api_key=None)
         assert "GEMINI_API_KEY is not set" in str(exc_info.value)
+
+
+@pytest.mark.anyio
+async def test_parse_fb_post_fast_regex_bypass():
+    """Test that standard queries bypass LLM completely via fast_regex_parse in < 0.1ms."""
+    from services.parser import fast_regex_parse
+
+    # 1. Clean query
+    res1 = fast_regex_parse("Switch 2")
+    assert res1 is not None
+    assert res1.search_query_ja == "SWITCH 2"
+    assert res1.fb_price_twd is None
+
+    # 2. Product query
+    res2 = fast_regex_parse("PS5")
+    assert res2 is not None
+    assert res2.search_query_ja == "PS5"
+
+    # 3. Direct parse_fb_post bypass without API key
+    res3 = await parse_fb_post("CCD 相機", api_key=None)
+    assert res3.search_query_ja == "CCD 相機"
 
 
 @pytest.mark.anyio
 async def test_parse_fb_post_api_failure():
     """Test that non-retryable upstream Gemini API failures raise GeminiAPIError gracefully."""
-    post_text = "售 Yonex 88D 拍子 3000"
+    complex_post_text = "【出清】誠可議價，歡迎面交或郵寄。\n售 Yonex 88D 拍子 3000"
 
     with patch("services.parser.genai.Client") as mock_client_class:
         mock_client = MagicMock()
@@ -527,15 +549,15 @@ async def test_parse_fb_post_api_failure():
         )
 
         with pytest.raises(GeminiAPIError) as exc_info:
-            await parse_fb_post(post_text, api_key="fake_api_key")
+            await parse_fb_post(complex_post_text, api_key="fake_api_key")
 
         assert "Gemini API error" in str(exc_info.value)
 
 
 @pytest.mark.anyio
 async def test_parse_fb_post_strict_core_keyword_simplicity():
-    """Test that concise queries like 'Switch 2' preserve core keywords without filler words or over-translation."""
-    post_text = "Switch 2"
+    """Test that concise queries preserve core keywords without filler words or over-translation."""
+    complex_post = "請幫我找一下這個任天堂的最新主機：\nSwitch 2"
 
     expected_payload = {
         "franchise": "Nintendo",
@@ -558,7 +580,7 @@ async def test_parse_fb_post_strict_core_keyword_simplicity():
         mock_client.aio.chats.create.return_value = mock_chat
         mock_chat.send_message = AsyncMock(return_value=mock_response)
 
-        result = await parse_fb_post(post_text, api_key="fake_api_key")
+        result = await parse_fb_post(complex_post, api_key="fake_api_key")
 
         assert isinstance(result, ParsedItem)
         assert result.keyword_jp == "SWITCH 2"

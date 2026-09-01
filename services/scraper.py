@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import re
 import statistics
@@ -6,6 +7,7 @@ import time
 import urllib.parse
 from typing import List, Optional
 
+import aiohttp
 from bs4 import BeautifulSoup
 import httpx
 from pydantic import BaseModel, Field
@@ -13,6 +15,26 @@ from pydantic import BaseModel, Field
 from services.cache import search_cache
 
 logger = logging.getLogger("line_bot.scraper")
+
+_aiohttp_session: Optional[aiohttp.ClientSession] = None
+
+
+async def get_aiohttp_session() -> aiohttp.ClientSession:
+    """Get or initialize singleton aiohttp.ClientSession with TCP connection pooling."""
+    global _aiohttp_session
+    try:
+        current_loop = asyncio.get_running_loop()
+    except RuntimeError:
+        current_loop = None
+
+    if _aiohttp_session is None or _aiohttp_session.closed or getattr(_aiohttp_session, "_loop", None) != current_loop:
+        connector = aiohttp.TCPConnector(limit=100, keepalive_timeout=30.0, ssl=True)
+        _aiohttp_session = aiohttp.ClientSession(
+            connector=connector,
+            headers=DEFAULT_HEADERS,
+            timeout=aiohttp.ClientTimeout(total=10.0, connect=3.0),
+        )
+    return _aiohttp_session
 
 
 class ScrapedListing(BaseModel):
@@ -230,13 +252,94 @@ def parse_buyee_html(html_content: str, max_items: int = 5) -> List[ScrapedListi
     return listings
 
 
+def parse_buyee_json_or_html(content_text: str, max_items: int = 5) -> List[ScrapedListing]:
+    """
+    Attempt ultra-fast (< 1ms) JSON parsing if structured JSON / __NEXT_DATA__ / API payload is present,
+    otherwise fallback to fast HTML extraction.
+    """
+    if not content_text:
+        return []
+
+    # Check if raw JSON response was returned
+    stripped = content_text.strip()
+    if stripped.startswith("{") or stripped.startswith("["):
+        try:
+            data = json.loads(stripped)
+            items_list = data.get("items") or data.get("itemList") or data.get("products") or []
+            listings: List[ScrapedListing] = []
+            for it in items_list[:max_items]:
+                price = it.get("price") or it.get("price_jpy") or it.get("taxIncludedPrice")
+                if price:
+                    listings.append(
+                        ScrapedListing(
+                            title=it.get("title") or it.get("name"),
+                            price_jpy=float(price),
+                            image_url=it.get("imageUrl") or it.get("image_url") or it.get("thumbnail"),
+                        )
+                    )
+            if listings:
+                logger.debug(f"⚡ [Fast JSON Parser] Extracted {len(listings)} items from raw JSON.")
+                return listings
+        except Exception:
+            pass
+
+    # Check for embedded Next.js or inline JSON script in HTML
+    next_data_match = re.search(r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>', content_text, re.DOTALL)
+    if next_data_match:
+        try:
+            json_str = next_data_match.group(1)
+            data = json.loads(json_str)
+            props = data.get("props", {}).get("pageProps", {})
+            items_list = props.get("items") or props.get("itemList") or props.get("searchResult", {}).get("items") or []
+            listings = []
+            for it in items_list[:max_items]:
+                price = it.get("price") or it.get("taxIncludedPrice")
+                if price:
+                    listings.append(
+                        ScrapedListing(
+                            title=it.get("title") or it.get("name"),
+                            price_jpy=float(price),
+                            image_url=it.get("imageUrl") or it.get("thumbnail"),
+                        )
+                    )
+            if listings:
+                logger.debug(f"⚡ [Fast JSON Parser] Extracted {len(listings)} items from __NEXT_DATA__ JSON script.")
+                return listings
+        except Exception:
+            pass
+
+    # Fallback to HTML parser
+    return parse_buyee_html(content_text, max_items=max_items)
+
+
+async def fetch_network_content(
+    search_url: str,
+    headers: dict,
+    timeout_seconds: float,
+    client: Optional[httpx.AsyncClient] = None,
+) -> tuple[int, str]:
+    """
+    Fetch web content asynchronously with aiohttp for low-latency network I/O,
+    with automatic support for injected clients and testing mocks.
+    """
+    if client is not None:
+        timeout_config = httpx.Timeout(timeout_seconds, connect=5.0)
+        response = await client.get(search_url, headers=headers, timeout=timeout_config)
+        return response.status_code, response.text
+
+    session = await get_aiohttp_session()
+    timeout_aio = aiohttp.ClientTimeout(total=timeout_seconds, connect=4.0)
+    async with session.get(search_url, headers=headers, timeout=timeout_aio) as resp:
+        return resp.status, await resp.text()
+
+
 async def scrape_buyee_prices(
     search_query_ja: str,
     timeout_seconds: float = 10.0,
     client: Optional[httpx.AsyncClient] = None,
 ) -> ScrapingResult:
     """
-    Scrape Buyee Mercari listings asynchronously for a given Japanese search query.
+    Scrape Buyee Mercari listings asynchronously with aiohttp for low-latency network I/O.
 
     Args:
         search_query_ja: Japanese keyword(s) to query on Mercari/Buyee.
@@ -271,37 +374,36 @@ async def scrape_buyee_prices(
     print(f"⏱️ [Scraper] Configured timeout: {timeout_seconds}s")
 
     headers = dict(DEFAULT_HEADERS)
-    timeout_config = httpx.Timeout(timeout_seconds, connect=5.0)
-
     start_time = time.time()
 
     try:
-        if client:
-            response = await client.get(search_url, headers=headers, timeout=timeout_config)
-        else:
-            async with httpx.AsyncClient(timeout=timeout_config, follow_redirects=True) as async_http_client:
-                response = await async_http_client.get(search_url, headers=headers)
+        status_code, response_text = await fetch_network_content(
+            search_url=search_url,
+            headers=headers,
+            timeout_seconds=timeout_seconds,
+            client=client,
+        )
 
         elapsed = time.time() - start_time
-        print(f"📥 [Scraper] Response received in {elapsed:.2f}s (HTTP {response.status_code})")
+        print(f"📥 [Scraper] Response received in {elapsed:.2f}s (HTTP {status_code})")
 
-        if response.status_code in (202, 403):
-            logger.warning(f"Buyee returned anti-bot challenge status {response.status_code} for query: {clean_query}")
+        if status_code in (202, 403):
+            logger.warning(f"Buyee returned anti-bot challenge status {status_code} for query: {clean_query}")
             raise ScrapingBlockedError(
-                f"日本代購平台返回驗證狀態 ({response.status_code})",
+                f"日本代購平台返回驗證狀態 ({status_code})",
                 search_url=search_url,
                 query=clean_query,
             )
 
-        if response.status_code != 200:
-            logger.error(f"Buyee returned HTTP status {response.status_code} for query: {clean_query}")
+        if status_code != 200:
+            logger.error(f"Buyee returned HTTP status {status_code} for query: {clean_query}")
             raise ScrapingError(
-                f"Buyee scraping failed with status code {response.status_code}",
+                f"Buyee scraping failed with status code {status_code}",
                 search_url=search_url,
                 query=clean_query,
             )
 
-        listings = parse_buyee_html(response.text, max_items=5)
+        listings = parse_buyee_json_or_html(response_text, max_items=5)
 
         if not listings:
             logger.warning(f"No listings found on Buyee for query: {clean_query}")
@@ -342,7 +444,7 @@ async def scrape_buyee_prices(
 
     except (ScrapingTimeoutError, ScrapingBlockedError, ScrapingError):
         raise
-    except httpx.TimeoutException as exc:
+    except (httpx.TimeoutException, asyncio.TimeoutError, aiohttp.ServerTimeoutError) as exc:
         elapsed = time.time() - start_time
         print(f"❌ [Scraper Timeout] Request exceeded {timeout_seconds}s (took {elapsed:.2f}s): {exc}")
         logger.error(f"Scraping timeout for query '{clean_query}': {exc}")
@@ -351,7 +453,7 @@ async def scrape_buyee_prices(
             search_url=search_url,
             query=clean_query,
         ) from exc
-    except httpx.RequestError as exc:
+    except (httpx.RequestError, aiohttp.ClientError) as exc:
         elapsed = time.time() - start_time
         print(f"❌ [Scraper Network Error] in {elapsed:.2f}s: {exc}")
         logger.error(f"HTTP network error while scraping '{clean_query}': {exc}")

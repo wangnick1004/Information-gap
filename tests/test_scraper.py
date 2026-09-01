@@ -1,3 +1,4 @@
+import json
 from unittest.mock import AsyncMock, patch
 
 import httpx
@@ -116,16 +117,11 @@ def test_parse_buyee_html():
 
 
 @pytest.mark.anyio
+@pytest.mark.anyio
 async def test_scrape_buyee_prices_success():
     """Test asynchronous scraping with mocked HTTP response."""
-    mock_response = httpx.Response(
-        status_code=200,
-        text=SAMPLE_BUYEE_HTML,
-        request=httpx.Request("GET", "https://buyee.jp/mercari/search"),
-    )
-
-    with patch("httpx.AsyncClient.get", new_callable=AsyncMock) as mock_get:
-        mock_get.return_value = mock_response
+    with patch("services.scraper.fetch_network_content", new_callable=AsyncMock) as mock_fetch:
+        mock_fetch.return_value = (200, SAMPLE_BUYEE_HTML)
 
         result = await scrape_buyee_prices("ハイキュー 影山 もちマス 2020", timeout_seconds=10.0)
 
@@ -143,14 +139,8 @@ async def test_scrape_buyee_prices_success():
 @pytest.mark.anyio
 async def test_scrape_buyee_prices_no_results():
     """Test that zero search results triggers ScrapingError."""
-    mock_response = httpx.Response(
-        status_code=200,
-        text=NO_RESULTS_HTML,
-        request=httpx.Request("GET", "https://buyee.jp/mercari/search"),
-    )
-
-    with patch("httpx.AsyncClient.get", new_callable=AsyncMock) as mock_get:
-        mock_get.return_value = mock_response
+    with patch("services.scraper.fetch_network_content", new_callable=AsyncMock) as mock_fetch:
+        mock_fetch.return_value = (200, NO_RESULTS_HTML)
 
         with pytest.raises(ScrapingError) as exc_info:
             await scrape_buyee_prices("nonexistent_item_query_123")
@@ -161,14 +151,8 @@ async def test_scrape_buyee_prices_no_results():
 @pytest.mark.anyio
 async def test_scrape_buyee_prices_http_error():
     """Test that 403 HTTP status triggers ScrapingBlockedError."""
-    mock_response = httpx.Response(
-        status_code=403,
-        text="Access Denied",
-        request=httpx.Request("GET", "https://buyee.jp/mercari/search"),
-    )
-
-    with patch("httpx.AsyncClient.get", new_callable=AsyncMock) as mock_get:
-        mock_get.return_value = mock_response
+    with patch("services.scraper.fetch_network_content", new_callable=AsyncMock) as mock_fetch:
+        mock_fetch.return_value = (403, "Access Denied")
 
         with pytest.raises(ScrapingBlockedError) as exc_info:
             await scrape_buyee_prices("query")
@@ -179,8 +163,9 @@ async def test_scrape_buyee_prices_http_error():
 @pytest.mark.anyio
 async def test_scrape_buyee_prices_timeout():
     """Test that network timeouts trigger ScrapingTimeoutError gracefully."""
-    with patch("httpx.AsyncClient.get", new_callable=AsyncMock) as mock_get:
-        mock_get.side_effect = httpx.ReadTimeout("Request timed out")
+    import asyncio
+    with patch("services.scraper.fetch_network_content", new_callable=AsyncMock) as mock_fetch:
+        mock_fetch.side_effect = asyncio.TimeoutError("Request timed out")
 
         with pytest.raises(ScrapingTimeoutError) as exc_info:
             await scrape_buyee_prices("query", timeout_seconds=10.0)
@@ -226,14 +211,8 @@ async def test_search_all_platforms_concurrently():
       </body>
     </html>
     """
-    mock_response = httpx.Response(
-        status_code=200,
-        text=mock_html,
-        request=httpx.Request("GET", "https://buyee.jp/mercari/search"),
-    )
-
-    with patch("httpx.AsyncClient.get", new_callable=AsyncMock) as mock_get:
-        mock_get.return_value = mock_response
+    with patch("services.scraper.fetch_network_content", new_callable=AsyncMock) as mock_fetch:
+        mock_fetch.return_value = (200, mock_html)
 
         res = await search_all_platforms_concurrently(
             query_ja="Switch 2",
@@ -252,4 +231,64 @@ async def test_search_all_platforms_concurrently():
         assert res.chinese_result.status == "success"
         assert "world.taobao.com" in res.chinese_result.search_url
         assert res.primary_scraping_result is not None
+
+
+def test_parse_buyee_raw_json():
+    """Test ultra-fast raw JSON response parsing without DOM overhead."""
+    from services.scraper import parse_buyee_json_or_html
+
+    raw_json = json.dumps({
+        "items": [
+            {
+                "name": "Sony WH-1000XM5 Black",
+                "price": 28000,
+                "imageUrl": "https://example.com/wh1000xm5.jpg",
+            },
+            {
+                "name": "Sony WH-1000XM5 Silver",
+                "price": 29000,
+                "imageUrl": "https://example.com/wh1000xm5_silver.jpg",
+            }
+        ]
+    })
+
+    listings = parse_buyee_json_or_html(raw_json)
+    assert len(listings) == 2
+    assert listings[0].price_jpy == 28000.0
+    assert listings[0].title == "Sony WH-1000XM5 Black"
+    assert listings[0].image_url == "https://example.com/wh1000xm5.jpg"
+
+
+def test_parse_buyee_nextjs_embedded_json():
+    """Test fast parsing from __NEXT_DATA__ JSON script tag."""
+    from services.scraper import parse_buyee_json_or_html
+
+    html_with_next_data = """
+    <html>
+      <head>
+        <script id="__NEXT_DATA__" type="application/json">
+        {
+          "props": {
+            "pageProps": {
+              "items": [
+                {
+                  "name": "Nikon Zfc Body",
+                  "price": 72000,
+                  "imageUrl": "https://example.com/zfc.jpg"
+                }
+              ]
+            }
+          }
+        }
+        </script>
+      </head>
+      <body><div>Other HTML</div></body>
+    </html>
+    """
+
+    listings = parse_buyee_json_or_html(html_with_next_data)
+    assert len(listings) == 1
+    assert listings[0].price_jpy == 72000.0
+    assert listings[0].title == "Nikon Zfc Body"
+    assert listings[0].image_url == "https://example.com/zfc.jpg"
 
