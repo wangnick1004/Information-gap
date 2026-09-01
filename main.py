@@ -1,5 +1,7 @@
 import logging
 import os
+import random
+import urllib.parse
 from typing import Optional
 
 from dotenv import load_dotenv
@@ -26,8 +28,9 @@ from services.flex_builder import (
     build_keyword_flex_message,
     build_price_comparison_flex,
 )
-# Alias FlexSendMessage for LINE SDK convention compatibility
+# Alias FlexSendMessage and TextSendMessage for LINE SDK convention compatibility
 FlexSendMessage = FlexMessage
+TextSendMessage = TextMessage
 from services.parser import (
     GeminiAPIError,
     GeminiRateLimitError,
@@ -52,10 +55,32 @@ logging.basicConfig(
 )
 logger = logging.getLogger("line_bot")
 
+# Rich Menu Hot Product Keywords for "一鍵尋寶體驗" Demo
+HOT_KEYWORDS = [
+    "Switch 2",
+    "咒術迴戰 五條 手辦",
+    "薩爾達傳說 王國之淚",
+    "Viscaria 桌球拍",
+    "CCD 數位相機",
+]
+
+# Rich Menu Text Responses for Non-Search Commands
+GUIDE_RESPONSE_TEXT = (
+    "📖 【新手指南】\n"
+    "1. 直接傳送想找的商品照片\n"
+    "2. 或輸入精準關鍵字\n"
+    "機器人就會自動幫您找出日台比價連結喔！"
+)
+
+DISCLAIMER_RESPONSE_TEXT = (
+    "⚖️ 【平台與免責聲明】\n"
+    "本服務僅提供關鍵字翻譯與網址重組，不涉入平台交易糾紛。"
+)
+
 # FastAPI Application Initialization
 app = FastAPI(
-    title="LINE Price-Comparison Bot API",
-    description="Stateless serverless backend for goods price comparison on LINE",
+    title="Line E-Commerce Price Comparison Bot",
+    description="LINE Bot with Gemini multimodal entity extraction and Buyee price comparison",
     version="1.0.0",
 )
 
@@ -89,12 +114,13 @@ async def health_check() -> HealthResponse:
 async def handle_line_events(events: list, access_token: str) -> None:
     """
     Process incoming LINE webhook events with multimodal price comparison pipeline:
-    1. Extract text or fetch image bytes via LINE Blob API.
-    2. Parse entities & generate Japanese search query with Gemini.
-    3. Scrape real-time prices and thumbnail from Buyee Mercari.
-    4. Calculate estimated landed cost in TWD and assess markup.
-    5. Generate and reply with a LINE Flex Message bubble.
-    6. Graceful fallback on errors to ensure user is always notified.
+    1. Check Rich Menu command router (新手指南, 平台比較與免責, 一鍵尋寶體驗).
+    2. Extract text or fetch image bytes via LINE Blob API.
+    3. Parse entities & generate Japanese search query with Gemini.
+    4. Scrape real-time prices and thumbnail from Buyee Mercari.
+    5. Calculate estimated landed cost in TWD and assess markup.
+    6. Generate and reply with a LINE Flex Message bubble.
+    7. Graceful fallback on errors to ensure user is always notified.
     """
     if not access_token:
         logger.warning("LINE_CHANNEL_ACCESS_TOKEN is not configured; skipping API reply.")
@@ -111,10 +137,42 @@ async def handle_line_events(events: list, access_token: str) -> None:
 
             user_text: Optional[str] = None
             image_bytes: Optional[bytes] = None
+            demo_intro_text: Optional[str] = None
 
             if isinstance(event.message, TextMessageContent):
                 user_text = event.message.text.strip()
                 logger.info(f"Processing text message from user: {user_text[:60]}...")
+
+                # --- Rich Menu Command Router ---
+                # 1. Newbie Guide Command
+                if user_text in ("新手指南", "新手圖解指南"):
+                    logger.info("Handling '新手指南' rich menu command.")
+                    await line_bot_api.reply_message(
+                        ReplyMessageRequest(
+                            reply_token=event.reply_token,
+                            messages=[TextMessage(text=GUIDE_RESPONSE_TEXT)],
+                        )
+                    )
+                    continue
+
+                # 2. Disclaimer & Platform Comparison Command
+                if user_text in ("平台比較與免責", "法律免責聲明"):
+                    logger.info("Handling '平台比較與免責' rich menu command.")
+                    await line_bot_api.reply_message(
+                        ReplyMessageRequest(
+                            reply_token=event.reply_token,
+                            messages=[TextMessage(text=DISCLAIMER_RESPONSE_TEXT)],
+                        )
+                    )
+                    continue
+
+                # 3. Random Search Demo Command
+                if user_text == "一鍵尋寶體驗":
+                    selected_keyword = random.choice(HOT_KEYWORDS)
+                    demo_intro_text = f"🎲 為您示範熱門搜尋：「{selected_keyword}」\n正在為您跨國比價中..."
+                    user_text = selected_keyword
+                    logger.info(f"Triggered '一鍵尋寶體驗' demo search with keyword: '{selected_keyword}'")
+
             elif isinstance(event.message, ImageMessageContent):
                 logger.info(f"Processing image message id={event.message.id} from user...")
                 try:
@@ -183,10 +241,15 @@ async def handle_line_events(events: list, access_token: str) -> None:
                 alt_text = f"【比價分析】{parsed_item.franchise} {parsed_item.character}".strip()
 
                 reply_msg = FlexMessage(alt_text=alt_text, contents=flex_container)
+                reply_messages = (
+                    [TextMessage(text=demo_intro_text), reply_msg]
+                    if demo_intro_text
+                    else [reply_msg]
+                )
                 await line_bot_api.reply_message(
                     ReplyMessageRequest(
                         reply_token=event.reply_token,
-                        messages=[reply_msg],
+                        messages=reply_messages,
                     )
                 )
                 logger.info("Successfully replied with Flex Message comparison card.")
@@ -226,10 +289,15 @@ async def handle_line_events(events: list, access_token: str) -> None:
                     alt_text="比價成功，來去撈便宜～",
                     contents=flex_container,
                 )
+                reply_messages = (
+                    [TextMessage(text=demo_intro_text), reply_msg]
+                    if demo_intro_text
+                    else [reply_msg]
+                )
                 await line_bot_api.reply_message(
                     ReplyMessageRequest(
                         reply_token=event.reply_token,
-                        messages=[reply_msg],
+                        messages=reply_messages,
                     )
                 )
 
@@ -237,10 +305,15 @@ async def handle_line_events(events: list, access_token: str) -> None:
                 logger.warning(f"Gemini server error (503 UNAVAILABLE): {exc}")
                 fallback_text = str(exc) if str(exc) else "目前 AI 伺服器大塞車，請稍等一兩分鐘後再試一次喔！"
                 try:
+                    reply_messages = (
+                        [TextMessage(text=demo_intro_text), TextMessage(text=fallback_text)]
+                        if demo_intro_text
+                        else [TextMessage(text=fallback_text)]
+                    )
                     await line_bot_api.reply_message(
                         ReplyMessageRequest(
                             reply_token=event.reply_token,
-                            messages=[TextMessage(text=fallback_text)],
+                            messages=reply_messages,
                         )
                     )
                 except Exception as reply_exc:
@@ -250,10 +323,15 @@ async def handle_line_events(events: list, access_token: str) -> None:
                 logger.warning(f"Gemini rate limit exceeded: {exc}")
                 fallback_text = str(exc) if str(exc) else "目前查詢人數較多，請稍後再試！"
                 try:
+                    reply_messages = (
+                        [TextMessage(text=demo_intro_text), TextMessage(text=fallback_text)]
+                        if demo_intro_text
+                        else [TextMessage(text=fallback_text)]
+                    )
                     await line_bot_api.reply_message(
                         ReplyMessageRequest(
                             reply_token=event.reply_token,
-                            messages=[TextMessage(text=fallback_text)],
+                            messages=reply_messages,
                         )
                     )
                 except Exception as reply_exc:
@@ -263,10 +341,15 @@ async def handle_line_events(events: list, access_token: str) -> None:
                 logger.error(f"Error executing price comparison pipeline: {exc}", exc_info=True)
                 fallback_text = "系統處理時發生異常，請確認輸入內容或稍後再試。"
                 try:
+                    reply_messages = (
+                        [TextMessage(text=demo_intro_text), TextMessage(text=fallback_text)]
+                        if demo_intro_text
+                        else [TextMessage(text=fallback_text)]
+                    )
                     await line_bot_api.reply_message(
                         ReplyMessageRequest(
                             reply_token=event.reply_token,
-                            messages=[TextMessage(text=fallback_text)],
+                            messages=reply_messages,
                         )
                     )
                 except Exception as reply_exc:
