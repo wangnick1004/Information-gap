@@ -376,6 +376,51 @@ def test_webhook_direct_keyword_search(mock_messaging_api_class, mock_api_client
     assert req.messages[0].type == "flex"
 
 
+@patch("main.AsyncApiClient")
+@patch("main.AsyncMessagingApi")
+def test_webhook_follow_event(mock_messaging_api_class, mock_api_client_class):
+    """Test FollowEvent triggers the welcome guide TextMessage."""
+    mock_api = AsyncMock()
+    mock_messaging_api_class.return_value = mock_api
+
+    secret = "test_secret_123"
+    token = "test_token_456"
+
+    payload = {
+        "destination": "U1234567890",
+        "events": [
+            {
+                "type": "follow",
+                "timestamp": 1625641600000,
+                "source": {"type": "user", "userId": "Uuser_new_friend"},
+                "replyToken": "token_follow_123",
+                "mode": "active",
+                "webhookEventId": "01FZ74A0TDDPYRVKNK77XKC3ZR",
+                "deliveryContext": {"isRedelivery": False},
+                "follow": {"isUnblocked": False},
+            }
+        ],
+    }
+    body_str = json.dumps(payload)
+    signature = generate_signature(secret, body_str)
+
+    with patch.object(settings, "line_channel_secret", secret), \
+         patch.object(settings, "line_channel_access_token", token):
+
+        response = client.post(
+            "/api/webhook",
+            content=body_str,
+            headers={"Content-Type": "application/json", "X-Line-Signature": signature},
+        )
+        assert response.status_code == 200
+
+    mock_api.reply_message.assert_called_once()
+    req = mock_api.reply_message.call_args[0][0]
+    assert len(req.messages) == 1
+    assert "歡迎加入！【拒絕當韭菜，消弭資訊落差】" in req.messages[0].text
+    assert "三大核心功能" in req.messages[0].text
+
+
 def test_mangum_handler():
     """Test that the Mangum handler processes AWS Lambda / Netlify API Gateway events."""
     import asyncio

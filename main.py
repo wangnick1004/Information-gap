@@ -20,7 +20,7 @@ from linebot.v3.messaging import (
     TextMessage,
 )
 from linebot.v3.webhook import WebhookParser
-from linebot.v3.webhooks import ImageMessageContent, MessageEvent, TextMessageContent
+from linebot.v3.webhooks import FollowEvent, ImageMessageContent, MessageEvent, TextMessageContent
 from mangum import Mangum
 from pydantic import BaseModel
 from config import Settings, settings
@@ -105,6 +105,16 @@ FEEDBACK_RESPONSE_TEXT = (
     "✉️weiwei33442@gmail.com"
 )
 
+WELCOME_RESPONSE_TEXT = (
+    "🎉 歡迎加入！【拒絕當韭菜，消弭資訊落差】\n\n"
+    "很多時候我們在社群平台上買貴了，只是因為不知道海外真實市價。本機器人專為打破跨境網購的資訊壁壘而生，幫您一鍵找出真實底價！\n\n"
+    "💡 【三大核心功能】\n"
+    "1️⃣ 圖片搜尋：直接傳送一張想買的商品照片，AI 會自動幫您辨識並全網比價。\n"
+    "2️⃣ 關鍵字/常用語翻譯：直接輸入商品名稱（如：Switch 2、Viscaria 桌球拍、底片相機），系統會自動翻譯成最精準的日文，並同步給出日、台、中三地的比價連結。\n"
+    "3️⃣ 跨境網購寶典：點擊下方六宮格選單，從海關 EZ WAY 認證、中日集運倉挑選，到各平台的優勢解析一次看懂。\n\n"
+    "👇 現在，請直接點擊下方選單左上角的「一鍵尋寶體驗」，看看比價神器實際上怎麼運作吧！"
+)
+
 # FastAPI Application Initialization
 app = FastAPI(
     title="Line E-Commerce Price Comparison Bot",
@@ -142,13 +152,14 @@ async def health_check() -> HealthResponse:
 async def handle_line_events(events: list, access_token: str) -> None:
     """
     Process incoming LINE webhook events with multimodal price comparison pipeline:
-    1. Check Rich Menu command router (新手指南, 平台比較與免責, 集運倉介紹, 客服與回報).
-    2. Extract text or fetch image bytes via LINE Blob API.
-    3. Parse entities & generate Japanese search query with Gemini.
-    4. Scrape real-time prices and thumbnail from Buyee Mercari.
-    5. Calculate estimated landed cost in TWD and assess markup.
-    6. Generate and reply with a LINE Flex Message bubble.
-    7. Graceful fallback on errors to ensure user is always notified.
+    1. Listen for FollowEvent and send comprehensive welcome guide.
+    2. Check Rich Menu command router (新手指南, 平台比較與免責, 集運倉介紹, 客服與回報).
+    3. Extract text or fetch image bytes via LINE Blob API.
+    4. Parse entities & generate Japanese search query with Gemini.
+    5. Scrape real-time prices and thumbnail from Buyee Mercari.
+    6. Calculate estimated landed cost in TWD and assess markup.
+    7. Generate and reply with a LINE Flex Message bubble.
+    8. Graceful fallback on errors to ensure user is always notified.
     """
     if not access_token:
         logger.warning("LINE_CHANNEL_ACCESS_TOKEN is not configured; skipping API reply.")
@@ -160,6 +171,21 @@ async def handle_line_events(events: list, access_token: str) -> None:
         line_bot_blob_api = AsyncMessagingApiBlob(api_client)
 
         for event in events:
+            # Handle FollowEvent (New Friend / Unblock)
+            if isinstance(event, FollowEvent):
+                logger.info(f"Handling FollowEvent from user {getattr(event.source, 'user_id', 'unknown')}")
+                try:
+                    await line_bot_api.reply_message(
+                        ReplyMessageRequest(
+                            reply_token=event.reply_token,
+                            messages=[TextMessage(text=WELCOME_RESPONSE_TEXT)],
+                        )
+                    )
+                    logger.info("Successfully sent welcome message for FollowEvent.")
+                except Exception as exc:
+                    logger.error(f"Failed to send welcome message for FollowEvent: {exc}", exc_info=True)
+                continue
+
             if not isinstance(event, MessageEvent):
                 continue
 
