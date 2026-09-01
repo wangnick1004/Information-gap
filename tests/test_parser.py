@@ -665,3 +665,34 @@ async def test_abbreviations_and_shorthand_expansion():
         assert result.keyword_jp == "RE:ゼロから始める異世界生活 エミリア"
         assert result.keyword_zh == "RE:從零開始的異世界生活 愛蜜莉雅"
 
+
+@pytest.mark.anyio
+async def test_few_shot_cot_schema_with_reasoning():
+    """Test that LLM outputs with reasoning, zh_keyword, and jp_keyword correctly populate ParsedItem."""
+    few_shot_output = {
+        "reasoning": "Refers to Satoru Gojo from the anime Jujutsu Kaisen.",
+        "zh_keyword": "咒術迴戰 五條悟",
+        "jp_keyword": "呪術廻戦 五条悟",
+        "fb_price_twd": None,
+        "is_anime_merch": True,
+    }
+
+    mock_resp = MagicMock()
+    mock_resp.text = json.dumps(few_shot_output)
+
+    with patch("services.parser.genai.Client") as mock_client_class:
+        mock_client = MagicMock()
+        mock_client_class.return_value = mock_client
+        mock_chat = MagicMock()
+        mock_client.aio.chats.create.return_value = mock_chat
+        mock_chat.send_message = AsyncMock(return_value=mock_resp)
+
+        complex_text = "【收】五條 徽章 誠可議"
+        result = await parse_fb_post(complex_text, api_key="fake_key")
+
+        assert result.reasoning == "Refers to Satoru Gojo from the anime Jujutsu Kaisen."
+        assert result.keyword_jp == "呪術廻戦 五条悟"
+        assert result.keyword_zh == "咒術迴戰 五條悟"
+        assert result.search_query_ja == "呪術廻戦 五条悟"
+        assert result.is_anime_merch is True
+

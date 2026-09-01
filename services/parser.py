@@ -29,6 +29,18 @@ DEFAULT_FALLBACK_MODEL = "gemini-flash-latest"
 class ParsedItem(BaseModel):
     """Structured entity extraction schema for physical retail goods trading posts."""
 
+    reasoning: Optional[str] = Field(
+        default=None,
+        description="Brief step-by-step explanation of the slang/abbreviation, product identity, or entity reasoning before generating final keywords.",
+    )
+    zh_keyword: Optional[str] = Field(
+        default=None,
+        description="The concise and precise Traditional Chinese search query for Taiwan and cross-border Chinese marketplaces.",
+    )
+    jp_keyword: Optional[str] = Field(
+        default=None,
+        description="The combined concise and precise Japanese search query for Japanese marketplaces (Mercari / Yahoo Auctions via Buyee).",
+    )
     franchise: str = Field(
         default="",
         description="The core brand, manufacturer, or IP/series name (e.g., 'Sony', 'Yonex', 'Nikon', 'ハイキュー!!', 'Pokemon').",
@@ -68,12 +80,23 @@ class ParsedItem(BaseModel):
 
     @model_validator(mode="after")
     def sync_keywords(self) -> "ParsedItem":
+        # Synchronize jp_keyword / keyword_jp / search_query_ja
+        if not self.keyword_jp and self.jp_keyword:
+            self.keyword_jp = self.jp_keyword
         if not self.keyword_jp and self.search_query_ja:
             self.keyword_jp = self.search_query_ja
         if not self.search_query_ja and self.keyword_jp:
             self.search_query_ja = self.keyword_jp
+        if not self.jp_keyword and self.keyword_jp:
+            self.jp_keyword = self.keyword_jp
+
+        # Synchronize zh_keyword / keyword_zh
+        if not self.keyword_zh and self.zh_keyword:
+            self.keyword_zh = self.zh_keyword
         if not self.keyword_zh:
             self.keyword_zh = f"{self.franchise} {self.character}".strip() or self.keyword_jp or self.search_query_ja
+        if not self.zh_keyword and self.keyword_zh:
+            self.zh_keyword = self.keyword_zh
         return self
 
 
@@ -254,7 +277,17 @@ CUSTOM_KEYWORDS = {
 
 
 SYSTEM_INSTRUCTION = """
-You are an expert precision translator, query perfecter, and cross-border e-commerce specialist (Yahoo! Auctions Japan, Mercari Japan, Buyee, Shopee Taiwan, Taobao).
+You are an expert cross-border e-commerce translator. Think step-by-step about what the user's input actually means in pop culture or hobbyist circles before translating.
+
+EXAMPLES:
+User: 're:0'
+Output: {"reasoning": "'re:0' is the popular shorthand for the anime 'Re:Zero - Starting Life in Another World'.", "zh_keyword": "RE:從零開始的異世界生活", "jp_keyword": "RE:ゼロから始める異世界生活"}
+
+User: '蝴蝶王'
+Output: {"reasoning": "Taiwanese table tennis slang for the Butterfly Viscaria blade.", "zh_keyword": "蝴蝶王", "jp_keyword": "ビスカリア"}
+
+User: '五條'
+Output: {"reasoning": "Refers to Satoru Gojo from the anime Jujutsu Kaisen.", "zh_keyword": "咒術迴戰 五條悟", "jp_keyword": "呪術廻戦 五条悟"}
 
 Your primary objective is to act as a precision translator and query perfecter for cross-border shopping. When you receive a search query:
 1. COLLOQUIAL TERMS: First, check if the user is using a Taiwanese colloquial product name or slang (e.g., '蝴蝶王', '小香', '金標', '水鬼'). If so, translate it to the OFFICIAL Japanese product name (e.g., 'ビスカリア', 'シャネル', 'ビスカリア ゴールデン', 'サブマリーナー') for Japanese platforms.
@@ -293,14 +326,15 @@ Your primary objective is to act as a precision translator and query perfecter f
    - NEVER include these transaction/condition terms in `keyword_jp` or `keyword_zh`.
 
 2. **Entity Extraction Rules**:
+   - `reasoning`: Brief step-by-step CoT reasoning explaining the product/abbreviation.
    - `franchise`: Official Brand, Manufacturer, or IP Franchise Name (e.g., 'Re:ゼロから始める異世界生活', 'Sony', '任天堂', 'ハイキュー!!', 'Pokemon').
    - `character`: Model Name, Specific Product Name, Character, or Sub-line (e.g., 'エミリア', 'レム', 'WH-1000XM5', 'Switch 2', 'ビスカリア', '影山飛雄', 'リザードン').
    - `item_type`: Product Category in standard Japanese/Chinese (e.g., ヘッドホン, バドミントンラケット, ミラーレス一眼カメラ, スニーカー, 缶バッジ, フィギュア, トレカ).
    - `year_or_edition`: Generation, version, or year if it is critical for distinguishing the product (e.g., Mark II, Gen 2, 2024).
 
 3. **Search Query Construction**:
-   - `keyword_jp`: Core perfected official Japanese product identifier (e.g., 'Re:ゼロから始める異世界生活', 'Switch 2', 'Sony WH-1000XM5', 'ビスカリア', '卓球ラケット').
-   - `keyword_zh`: Core perfected official Traditional Chinese product identifier (e.g., 'Re:從零開始的異世界生活', 'Switch 2', 'Sony WH-1000XM5', '蝴蝶王', '桌球拍').
+   - `keyword_jp` / `jp_keyword`: Core perfected official Japanese product identifier (e.g., 'Re:ゼロから始める異世界生活', 'Switch 2', 'Sony WH-1000XM5', 'ビスカリア', '卓球ラケット').
+   - `keyword_zh` / `zh_keyword`: Core perfected official Traditional Chinese product identifier (e.g., 'Re:從零開始的異世界生活', 'Switch 2', 'Sony WH-1000XM5', '蝴蝶王', '桌球拍').
    - Keep global brand names (e.g., Sony, Yonex, Canon, Apple, Nike, Switch) in standard Latin form.
 
 4. **Price Extraction (`fb_price_twd`)**:
