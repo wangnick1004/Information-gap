@@ -587,3 +587,81 @@ async def test_parse_fb_post_strict_core_keyword_simplicity():
         assert result.keyword_zh == "SWITCH 2"
         assert result.is_anime_merch is True
 
+
+@pytest.mark.anyio
+async def test_custom_colloquialism_keywords():
+    """Test that Taiwanese colloquialisms map directly to official Japanese marketplace keywords."""
+    from services.parser import CUSTOM_KEYWORDS, fast_regex_parse
+
+    # 1. Direct dictionary matches
+    assert CUSTOM_KEYWORDS["蝴蝶王"] == "ビスカリア"
+    assert CUSTOM_KEYWORDS["金標"] == "ビスカリア ゴールデン"
+    assert CUSTOM_KEYWORDS["張繼科"] == "張継科"
+    assert CUSTOM_KEYWORDS["小香"] == "シャネル"
+
+    # 2. Fast-path parsing maps colloquial terms to official Japanese listing terms
+    res_butterfly = fast_regex_parse("蝴蝶王")
+    assert res_butterfly is not None
+    assert res_butterfly.keyword_jp == "ビスカリア"
+    assert res_butterfly.search_query_ja == "ビスカリア"
+    assert res_butterfly.keyword_zh == "蝴蝶王"
+
+    res_chanel = fast_regex_parse("小香")
+    assert res_chanel is not None
+    assert res_chanel.keyword_jp == "シャネル"
+    assert res_chanel.keyword_zh == "小香"
+
+    # 3. Direct parse_fb_post integration
+    res_direct = await parse_fb_post("蝴蝶王", api_key=None)
+    assert res_direct.keyword_jp == "ビスカリア"
+    assert res_direct.search_query_ja == "ビスカリア"
+
+
+@pytest.mark.anyio
+async def test_abbreviations_and_shorthand_expansion():
+    """Test that shorthand abbreviations like 're:0' and 'botw' expand to full official titles."""
+    from services.parser import CUSTOM_KEYWORDS, fast_regex_parse
+
+    # 1. Test re:0 mapping in dictionary and fast parse
+    assert "re:0" in CUSTOM_KEYWORDS
+    assert CUSTOM_KEYWORDS["re:0"] == "Re:ゼロから始める異世界生活"
+
+    res_re0 = fast_regex_parse("re:0")
+    assert res_re0 is not None
+    assert res_re0.keyword_jp == "Re:ゼロから始める異世界生活"
+    assert res_re0.search_query_ja == "Re:ゼロから始める異世界生活"
+
+    # 2. Test botw mapping in dictionary and fast parse
+    assert "botw" in CUSTOM_KEYWORDS
+    assert CUSTOM_KEYWORDS["botw"] == "ゼルダの伝説 ブレス オブ ザ ワイルド"
+
+    res_botw = fast_regex_parse("botw")
+    assert res_botw is not None
+    assert res_botw.keyword_jp == "ゼルダの伝説 ブレス オブ ザ ワイルド"
+
+    # 3. Test LLM expansion with prompt instruction
+    with patch("services.parser.genai.Client") as mock_client_class:
+        mock_client = MagicMock()
+        mock_client_class.return_value = mock_client
+        mock_chat = MagicMock()
+        mock_client.aio.chats.create.return_value = mock_chat
+
+        expected_re0 = {
+            "franchise": "Re:ゼロから始める異世界生活",
+            "character": "エミリア",
+            "item_type": "フィギュア",
+            "year_or_edition": None,
+            "keyword_jp": "Re:ゼロから始める異世界生活 エミリア",
+            "keyword_zh": "Re:從零開始的異世界生活 愛蜜莉雅",
+            "fb_price_twd": 1200,
+            "is_anime_merch": True,
+        }
+        mock_resp = MagicMock()
+        mock_resp.text = json.dumps(expected_re0)
+        mock_chat.send_message = AsyncMock(return_value=mock_resp)
+
+        complex_query = "【售】re:0 愛蜜莉雅 景品公仔 1200"
+        result = await parse_fb_post(complex_query, api_key="fake_key")
+        assert result.keyword_jp == "RE:ゼロから始める異世界生活 エミリア"
+        assert result.keyword_zh == "RE:從零開始的異世界生活 愛蜜莉雅"
+
