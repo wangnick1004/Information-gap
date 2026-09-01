@@ -197,7 +197,8 @@ def test_webhook_rich_menu_disclaimer_command(mock_messaging_api_class, mock_api
     mock_api.reply_message.assert_called_once()
     req = mock_api.reply_message.call_args[0][0]
     assert len(req.messages) == 1
-    assert "【平台與免責聲明】" in req.messages[0].text
+    assert "【創立初衷：打破資訊落差】" in req.messages[0].text
+    assert "【使用免責聲明】" in req.messages[0].text
 
 
 @patch("main.AsyncApiClient")
