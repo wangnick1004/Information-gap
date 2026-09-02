@@ -1,7 +1,9 @@
 import asyncio
+from collections import defaultdict
 import logging
 import os
 import random
+import time
 import urllib.parse
 from typing import Optional
 
@@ -196,6 +198,43 @@ app.add_middleware(
 )
 
 
+# --- Memory-Based Rate Limiter (Sliding Window: 5 requests / 60 seconds per user) ---
+RATE_LIMIT_MAX_REQUESTS = 5
+RATE_LIMIT_WINDOW_SECONDS = 60.0
+RATE_LIMIT_COOLDOWN_MESSAGE = "⚠️ 系統冷卻中！您的搜尋頻率過高，請稍候 1 分鐘後再試。這能確保每位使用者都有順暢的比價體驗喔！"
+
+user_request_timestamps: defaultdict[str, list[float]] = defaultdict(list)
+
+
+def is_rate_limited(
+    user_id: str,
+    max_requests: int = RATE_LIMIT_MAX_REQUESTS,
+    window_seconds: float = RATE_LIMIT_WINDOW_SECONDS,
+) -> bool:
+    """
+    Check if a user has exceeded the rate limit threshold (max 5 requests per 60 seconds).
+    Automatically trims timestamps older than the sliding window.
+    Returns True if rate limited, False otherwise.
+    """
+    if not user_id:
+        return False
+
+    current_time = time.time()
+    cutoff_time = current_time - window_seconds
+
+    # Filter out timestamps older than the sliding window
+    user_request_timestamps[user_id] = [
+        ts for ts in user_request_timestamps[user_id] if ts > cutoff_time
+    ]
+
+    if len(user_request_timestamps[user_id]) >= max_requests:
+        return True
+
+    # Record this search query timestamp
+    user_request_timestamps[user_id].append(current_time)
+    return False
+
+
 class HealthResponse(BaseModel):
     status: str
     service: str
@@ -324,8 +363,22 @@ async def handle_line_events(events: list, access_token: str) -> None:
                 # Unsupported message type (stickers, audio, etc.)
                 continue
 
-            # Step 0: Trigger LINE Loading Animation immediately (typing indicator for user)
             user_id = getattr(event.source, "user_id", None)
+
+            # Rate Limiting Intercept: Strictly allow max 5 searches per 60 seconds per user
+            if user_id and is_rate_limited(user_id):
+                logger.warning(
+                    f"🛑 [Rate Limit Exceeded] User {user_id} exceeded {RATE_LIMIT_MAX_REQUESTS} searches per {RATE_LIMIT_WINDOW_SECONDS}s."
+                )
+                await line_bot_api.reply_message(
+                    ReplyMessageRequest(
+                        reply_token=event.reply_token,
+                        messages=[TextMessage(text=RATE_LIMIT_COOLDOWN_MESSAGE)],
+                    )
+                )
+                continue
+
+            # Step 0: Trigger LINE Loading Animation immediately (typing indicator for user)
             if user_id:
                 try:
                     await line_bot_api.show_loading_animation(

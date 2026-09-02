@@ -2,7 +2,7 @@ import base64
 import hashlib
 import hmac
 import json
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -455,3 +455,103 @@ def test_mangum_handler():
     assert response["statusCode"] == 200
     body = json.loads(response["body"])
     assert body["status"] == "healthy"
+
+
+def test_rate_limiter_logic():
+    """Test unit rate limiter threshold and sliding window."""
+    from main import is_rate_limited, user_request_timestamps
+
+    test_uid = "U_test_rate_limit_unit"
+    user_request_timestamps.pop(test_uid, None)
+
+    # 1 to 5 requests should all be allowed
+    for _ in range(5):
+        assert is_rate_limited(test_uid) is False
+
+    # 6th request within 60s should be rate limited
+    assert is_rate_limited(test_uid) is True
+
+    # After simulated 61 seconds, rate limit window resets
+    with patch("time.time", return_value=user_request_timestamps[test_uid][-1] + 61.0):
+        assert is_rate_limited(test_uid) is False
+
+
+@patch("main.AsyncApiClient")
+@patch("main.AsyncMessagingApi")
+def test_webhook_rate_limit_interception(mock_messaging_api_class, mock_api_client_class):
+    """Test that users exceeding 5 searches/60s receive cooldown message and bypass search execution."""
+    from main import user_request_timestamps
+
+    mock_api = AsyncMock()
+    mock_messaging_api_class.return_value = mock_api
+    mock_api_client = MagicMock()
+    mock_api_client_class.return_value.__aenter__.return_value = mock_api_client
+
+    secret = "test_secret_123"
+    token = "test_token_456"
+    test_user = "U_spam_user_999"
+    user_request_timestamps.pop(test_user, None)
+
+    def make_payload(text_msg: str):
+        return {
+            "destination": "U1234567890",
+            "events": [
+                {
+                    "type": "message",
+                    "message": {
+                        "type": "text",
+                        "id": "100001",
+                        "text": text_msg,
+                        "quoteToken": "quote123",
+                    },
+                    "timestamp": 1625641600000,
+                    "source": {"type": "user", "userId": test_user},
+                    "replyToken": "nHuyWiB7yP5Zw52FIkcQobQuGDXCTA",
+                    "mode": "active",
+                    "webhookEventId": "01FZ74A0TDDPYRVKNK77XKC3ZR",
+                    "deliveryContext": {"isRedelivery": False},
+                }
+            ],
+        }
+
+    with patch.object(settings, "line_channel_secret", secret), \
+         patch.object(settings, "line_channel_access_token", token), \
+         patch("main.parse_fb_post", new_callable=AsyncMock) as mock_parser, \
+         patch("main.scrape_buyee_prices", new_callable=AsyncMock) as mock_scraper:
+
+        # 1. First 5 search requests succeed
+        for i in range(5):
+            body_str = json.dumps(make_payload(f"搜尋商品_{i}"))
+            sig = generate_signature(secret, body_str)
+            res = client.post(
+                "/api/webhook",
+                content=body_str,
+                headers={"Content-Type": "application/json", "X-Line-Signature": sig},
+            )
+            assert res.status_code == 200
+
+        # 2. 6th search request triggers rate limit interception
+        body_str_6th = json.dumps(make_payload("第6次搜尋"))
+        sig_6th = generate_signature(secret, body_str_6th)
+        res_6th = client.post(
+            "/api/webhook",
+            content=body_str_6th,
+            headers={"Content-Type": "application/json", "X-Line-Signature": sig_6th},
+        )
+        assert res_6th.status_code == 200
+
+        # Verify rate limit message was sent
+        last_call_args = mock_api.reply_message.call_args[0][0]
+        assert "⚠️ 系統冷卻中！您的搜尋頻率過高" in last_call_args.messages[0].text
+
+        # 3. Rich menu commands (e.g. 新手指南) are NOT throttled even when rate limited
+        body_str_guide = json.dumps(make_payload("新手指南"))
+        sig_guide = generate_signature(secret, body_str_guide)
+        res_guide = client.post(
+            "/api/webhook",
+            content=body_str_guide,
+            headers={"Content-Type": "application/json", "X-Line-Signature": sig_guide},
+        )
+        assert res_guide.status_code == 200
+        guide_call_args = mock_api.reply_message.call_args[0][0]
+        assert "📖 【新手指南】" in guide_call_args.messages[0].text
