@@ -172,6 +172,53 @@ async def test_parse_fb_post_image_only_success():
         mock_client.aio.chats.create.assert_called_once()
         mock_chat.send_message.assert_awaited_once()
 
+        # Verify that DEFAULT_VISION_PROMPT is delivered to Gemini
+        sent_message = mock_chat.send_message.call_args[1]["message"]
+        from services.parser import DEFAULT_VISION_PROMPT
+        assert isinstance(sent_message, list)
+        assert DEFAULT_VISION_PROMPT in sent_message
+
+
+@pytest.mark.anyio
+async def test_parse_fb_post_custom_vision_prompt():
+    """Test passing custom vision prompt to parse_fb_post."""
+    buf = io.BytesIO()
+    Image.new("RGB", (100, 100), color="red").save(buf, format="JPEG")
+    fake_image_bytes = buf.getvalue()
+    custom_prompt = "Custom strict vision prompt for identification"
+
+    expected_payload = {
+        "franchise": "Fujifilm",
+        "character": "X100V",
+        "item_type": "相機",
+        "year_or_edition": "黑色",
+        "search_query_ja": "Fujifilm X100V 黑色",
+        "fb_price_twd": None,
+        "is_anime_merch": True,
+    }
+
+    mock_response = MagicMock()
+    mock_response.text = json.dumps(expected_payload)
+
+    with patch("services.parser.genai.Client") as mock_client_class:
+        mock_client = MagicMock()
+        mock_client_class.return_value = mock_client
+        mock_chat = MagicMock()
+        mock_client.aio.chats.create.return_value = mock_chat
+        mock_chat.send_message = AsyncMock(return_value=mock_response)
+
+        result = await parse_fb_post(
+            image_data=fake_image_bytes,
+            vision_prompt=custom_prompt,
+            api_key="fake_api_key",
+        )
+
+        assert isinstance(result, ParsedItem)
+        mock_chat.send_message.assert_awaited_once()
+        sent_message = mock_chat.send_message.call_args[1]["message"]
+        assert custom_prompt in sent_message
+
+
 
 @pytest.mark.anyio
 async def test_parse_fb_post_pil_image_and_text():

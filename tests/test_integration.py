@@ -320,7 +320,12 @@ def test_end_to_end_image_message_success(
 
         assert response.status_code == 200
         mock_blob_api.get_message_content.assert_awaited_once_with("img_12345")
-        mock_parse_fb_post.assert_awaited_once_with(post_text=None, image_data=b"fake_image_bytes_123")
+        from main import GEMINI_VISION_PROMPT
+        mock_parse_fb_post.assert_awaited_once_with(
+            post_text=None,
+            image_data=b"fake_image_bytes_123",
+            vision_prompt=GEMINI_VISION_PROMPT,
+        )
         mock_api.show_loading_animation.assert_awaited_once()
         mock_api.reply_message.assert_awaited_once()
 

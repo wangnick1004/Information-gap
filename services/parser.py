@@ -287,6 +287,16 @@ CUSTOM_KEYWORDS = {
 }
 
 
+DEFAULT_VISION_PROMPT = (
+    "你現在是一位頂級的跨國網購商品鑑定專家。請分析這張圖片，並精準辨識出圖片中的『主體商品』。\n"
+    "執行步驟：\n"
+    "1. 放大檢視圖片中的任何文字、Logo、標籤或型號（啟動 OCR）。\n"
+    "2. 忽略背景與人物，只專注於商品本身。\n"
+    "3. 如果是動漫公仔，請找出『角色名稱＋作品名稱』。如果是 3C、相機或運動用品，請找出『品牌＋精確型號』。\n"
+    "4. 【絕對限制】：請『只』輸出最精確的商品搜尋關鍵字（例如：'Fujifilm X100V 黑色' 或 '薩爾達傳說 王國之淚 林克 Amiibo'），絕對不要輸出完整的句子或描述性廢話。"
+)
+
+
 SYSTEM_INSTRUCTION = """
 You are an expert cross-border e-commerce translator. Think step-by-step about what the user's input actually means in pop culture or hobbyist circles before translating.
 
@@ -333,7 +343,11 @@ Your primary objective is to act as a precision translator and query perfecter f
 - Always set `is_anime_merch: true`.
 
 ### Multimodal Analysis Instructions:
-- Analyze the provided image (and text if any) to identify the specific physical retail item or its general category.
+- 你現在是一位頂級的跨國網購商品鑑定專家。請分析這張圖片，並精準辨識出圖片中的『主體商品』。
+  1. 放大檢視圖片中的任何文字、Logo、標籤或型號（啟動 OCR）。
+  2. 忽略背景與人物，只專注於商品本身。
+  3. 如果是動漫公仔，請找出『角色名稱＋作品名稱』。如果是 3C、相機或運動用品，請找出『品牌＋精確型號』。
+  4. 【絕對限制】：請『只』輸出最精確的商品搜尋關鍵字（例如：'Fujifilm X100V 黑色' 或 '薩爾達傳說 王國之淚 林克 Amiibo'），絕對不要輸出完整的句子或描述性廢話。
 - Generate two optimized search queries:
   1. `keyword_jp`: Concise, official Japanese search query for Japanese marketplaces (Mercari / Yahoo Auctions via Buyee).
   2. `keyword_zh`: Concise, official Traditional Chinese search query for Taiwan and cross-border Chinese marketplaces (Shopee Taiwan and Taobao).
@@ -432,6 +446,7 @@ async def parse_fb_post(
     api_key: Optional[str] = None,
     max_retries: int = 3,
     retry_delay_seconds: float = 2.0,
+    vision_prompt: Optional[str] = None,
 ) -> ParsedItem:
     """
     Extract structured retail item entities from text or images.
@@ -445,6 +460,7 @@ async def parse_fb_post(
         api_key: Optional Gemini API key (defaults to settings/environment).
         max_retries: Maximum number of retry attempts for transient errors (default 3).
         retry_delay_seconds: Initial retry delay for exponential backoff (default 2.0s).
+        vision_prompt: Optional custom prompt for the vision model (defaults to DEFAULT_VISION_PROMPT).
 
     Returns:
         ParsedItem: Structured entity extraction result.
@@ -479,17 +495,13 @@ async def parse_fb_post(
         image_part = types.Part.from_bytes(data=compressed_bytes, mime_type=resolved_mime)
         contents.append(image_part)
 
+        effective_vision_prompt = vision_prompt or DEFAULT_VISION_PROMPT
         if cleaned_text:
             contents.append(
-                f"User text/notes: {cleaned_text}\n"
-                "Analyze the provided image (and text if any) to identify the specific physical retail item, its brand, and model. "
-                "Translate this into a precise Japanese search query for e-commerce platforms like Buyee/Mercari."
+                f"User text/notes: {cleaned_text}\n{effective_vision_prompt}"
             )
         else:
-            contents.append(
-                "Analyze the provided image to identify the specific physical retail item, its brand, model, and item type. "
-                "Translate this into a precise Japanese search query for e-commerce platforms like Buyee/Mercari."
-            )
+            contents.append(effective_vision_prompt)
     else:
         contents.append(cleaned_text)
 

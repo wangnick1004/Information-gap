@@ -124,6 +124,17 @@ WELCOME_RESPONSE_TEXT = (
     "👇 現在，請直接點擊下方選單左上角的「一鍵尋寶體驗」，看看比價神器實際上怎麼運作吧！"
 )
 
+# Gemini Vision Model Prompt for Image Messages (Strict E-commerce Extraction Rule)
+GEMINI_VISION_PROMPT = (
+    "你現在是一位頂級的跨國網購商品鑑定專家。請分析這張圖片，並精準辨識出圖片中的『主體商品』。\n"
+    "執行步驟：\n"
+    "1. 放大檢視圖片中的任何文字、Logo、標籤或型號（啟動 OCR）。\n"
+    "2. 忽略背景與人物，只專注於商品本身。\n"
+    "3. 如果是動漫公仔，請找出『角色名稱＋作品名稱』。如果是 3C、相機或運動用品，請找出『品牌＋精確型號』。\n"
+    "4. 【絕對限制】：請『只』輸出最精確的商品搜尋關鍵字（例如：'Fujifilm X100V 黑色' 或 '薩爾達傳說 王國之淚 林克 Amiibo'），絕對不要輸出完整的句子或描述性廢話。"
+)
+
+
 from contextlib import asynccontextmanager
 
 # Predefined Hot Keywords for Background Cache Pre-warming
@@ -411,7 +422,11 @@ async def handle_line_events(events: list, access_token: str) -> None:
 
             try:
                 # Step 1: Multimodal Entity Extraction & Japanese/Chinese Search Query Generation
-                parsed_item = await parse_fb_post(post_text=user_text, image_data=image_bytes)
+                parsed_item = await parse_fb_post(
+                    post_text=user_text,
+                    image_data=image_bytes,
+                    vision_prompt=GEMINI_VISION_PROMPT if image_bytes else None,
+                )
 
                 # Step 2: Concurrently Search Japanese, Chinese, and Taiwanese platforms simultaneously
                 jp_task = scrape_buyee_prices(parsed_item.search_query_ja)
