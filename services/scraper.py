@@ -585,3 +585,16 @@ async def search_all_platforms_concurrently(
         chinese_result=cn_res,
         primary_scraping_result=primary_scrape,
     )
+
+
+# Re-export lightweight price-fetching module functions
+from services.lightweight_fetcher import (  # noqa: E402
+    construct_platform_search_url,
+    fetch_lightweight_platform_min_price,
+    fetch_lightweight_prices,
+    fetch_mercari_min_price,
+    fetch_rakuten_min_price,
+    filter_extreme_low_prices,
+    parse_platform_first_page_prices,
+)
+

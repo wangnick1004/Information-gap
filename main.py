@@ -66,6 +66,15 @@ from services.scraper import (
     search_chinese_platforms,
     search_taiwanese_platforms,
 )
+from services.lightweight_fetcher import (
+    construct_platform_search_url,
+    fetch_lightweight_platform_min_price,
+    fetch_lightweight_prices,
+    fetch_mercari_min_price,
+    fetch_rakuten_min_price,
+    filter_extreme_low_prices,
+    parse_platform_first_page_prices,
+)
 
 # Configure logging
 logging.basicConfig(
@@ -458,7 +467,10 @@ async def handle_line_events(events: list, access_token: str) -> None:
                 jp_task = scrape_buyee_prices(effective_jp_keyword, max_items=15)
                 tw_task = search_taiwanese_platforms(effective_keyword)
                 cn_task = search_chinese_platforms(effective_keyword)
-                scraper_result, tw_result, cn_result = await asyncio.gather(jp_task, tw_task, cn_task)
+                rakuten_task = fetch_rakuten_min_price(effective_jp_keyword, timeout_seconds=2.0)
+                scraper_result, tw_result, cn_result, rakuten_price = await asyncio.gather(
+                    jp_task, tw_task, cn_task, rakuten_task
+                )
 
                 # Step 3: Compute Landed Cost & Markup Analysis
                 fb_price = (
@@ -481,6 +493,9 @@ async def handle_line_events(events: list, access_token: str) -> None:
                 dynamic_pricing = calculate_dynamic_platform_prices(
                     platform_raw_prices=platform_raw_prices,
                 )
+                if rakuten_price and rakuten_price > 0:
+                    dynamic_pricing.rakuten_min_price = rakuten_price
+                    dynamic_pricing.platform_min_prices["rakuten"] = rakuten_price
 
                 # Step 5: Build LINE Flex Message UI with Dynamic Price Range & Platform Minimums
                 flex_dict = build_price_comparison_flex(
@@ -539,6 +554,13 @@ async def handle_line_events(events: list, access_token: str) -> None:
                     else kw_zh
                 )
 
+                # Attempt fast lightweight fetch if applicable
+                rakuten_fallback_price = None
+                try:
+                    rakuten_fallback_price = await fetch_rakuten_min_price(kw_jp, timeout_seconds=2.0)
+                except Exception:
+                    rakuten_fallback_price = None
+
                 keyword_flex_dict = build_keyword_flex_message(
                     japanese_keyword=kw_jp,
                     search_url=search_url,
@@ -557,7 +579,7 @@ async def handle_line_events(events: list, access_token: str) -> None:
                     taobao_min_price=None,
                     yahoo_tw_min_price=None,
                     yahoo_jp_min_price=None,
-                    rakuten_min_price=None,
+                    rakuten_min_price=rakuten_fallback_price,
                     enable_dynamic_buttons=True,
                 )
                 flex_container = FlexContainer.from_dict(keyword_flex_dict)
@@ -683,3 +705,41 @@ async def line_webhook(
 
 # Mangum handler for AWS Lambda / Netlify Serverless Functions
 handler = Mangum(app, lifespan="off")
+
+
+async def fetch_and_generate_flex_message(
+    keyword_ja: str,
+    keyword_zh: Optional[str] = None,
+    platform: str = "mercari",
+    timeout_seconds: float = 2.0,
+    min_valid_jpy: float = 300.0,
+    search_url: Optional[str] = None,
+    affiliate_id: Optional[str] = None,
+    enable_dynamic_buttons: bool = True,
+) -> Dict[str, Any]:
+    """
+    Lightweight helper to fetch min price for target platform (Mercari or Rakuten)
+    and pass calculated min_price to Flex Message builder, replacing '(點擊查看)' fallback
+    with '(約 NT${min_price})' or keeping '(點擊查看)' on failure/timeout.
+    """
+    price_twd = await fetch_lightweight_platform_min_price(
+        platform=platform,
+        query=keyword_ja,
+        timeout_seconds=timeout_seconds,
+        min_valid_jpy=min_valid_jpy,
+    )
+    clean_ja = normalize_search_keyword(keyword_ja) or "商品搜尋"
+    target_url = search_url or construct_platform_search_url(platform, clean_ja)
+
+    plat_lower = platform.lower().strip()
+    return build_keyword_flex_message(
+        japanese_keyword=clean_ja,
+        search_url=target_url,
+        affiliate_id=affiliate_id or settings.buyee_affiliate_id,
+        affiliate_base_url=settings.affiliate_base_url,
+        keyword_zh=keyword_zh or clean_ja,
+        mercari_min_price=price_twd if plat_lower in ("mercari", "mercari_jp", "buyee") else None,
+        rakuten_min_price=price_twd if plat_lower in ("rakuten", "rakuten_jp", "buyee_rakuten") else None,
+        enable_dynamic_buttons=enable_dynamic_buttons,
+    )
+
