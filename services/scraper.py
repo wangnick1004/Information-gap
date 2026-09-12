@@ -337,6 +337,7 @@ async def scrape_buyee_prices(
     search_query_ja: str,
     timeout_seconds: float = 10.0,
     client: Optional[httpx.AsyncClient] = None,
+    max_items: int = 5,
 ) -> ScrapingResult:
     """
     Scrape Buyee Mercari listings asynchronously with aiohttp for low-latency network I/O.
@@ -345,6 +346,7 @@ async def scrape_buyee_prices(
         search_query_ja: Japanese keyword(s) to query on Mercari/Buyee.
         timeout_seconds: Strict HTTP request timeout in seconds (default 10.0s).
         client: Optional pre-configured httpx.AsyncClient (useful for mocking/testing).
+        max_items: Number of top listings to fetch (default 5, supports up to 15).
 
     Returns:
         ScrapingResult: Aggregated lowest/median price and representative thumbnail.
@@ -359,7 +361,7 @@ async def scrape_buyee_prices(
         raise ScrapingError("Search query cannot be empty.")
 
     # Check 1-hour TTL cache for previously scraped query
-    cache_key = f"buyee:{clean_query}"
+    cache_key = f"buyee:{clean_query}:{max_items}"
     cached_result = search_cache.get(cache_key)
     if cached_result is not None and isinstance(cached_result, ScrapingResult):
         logger.info(f"⚡ [Cache Hit] Returning cached scraping result for query: '{clean_query}'")
@@ -403,7 +405,7 @@ async def scrape_buyee_prices(
                 query=clean_query,
             )
 
-        listings = parse_buyee_json_or_html(response_text, max_items=5)
+        listings = parse_buyee_json_or_html(response_text, max_items=max_items)
 
         if not listings:
             logger.warning(f"No listings found on Buyee for query: {clean_query}")
@@ -481,6 +483,10 @@ class PlatformSearchResult(BaseModel):
     scraping_result: Optional[ScrapingResult] = None
     status: str = "success"  # 'success', 'fallback', 'error'
     error_message: Optional[str] = None
+    sample_prices: List[float] = Field(
+        default_factory=list,
+        description="Top sample listing prices from this platform in native currency.",
+    )
 
 
 class CrossBorderSearchResult(BaseModel):

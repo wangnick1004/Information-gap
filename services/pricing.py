@@ -77,3 +77,149 @@ def calculate_landed_cost(
         fb_price_twd=fb_price_twd,
         price_difference_twd=price_diff,
     )
+
+
+def remove_outliers(prices: List[float], trim_ratio: float = 0.2) -> List[float]:
+    """
+    Remove outliers by discarding the top (trim_ratio * 100)% highest
+    and bottom (trim_ratio * 100)% lowest prices to filter out fake items,
+    empty boxes, or scalpers. Default is 20% on each end.
+    """
+    if not prices:
+        return []
+
+    valid_prices = [float(p) for p in prices if p is not None and float(p) > 0]
+    if not valid_prices:
+        return []
+
+    sorted_prices = sorted(valid_prices)
+    n = len(sorted_prices)
+    trim_count = int(n * trim_ratio)
+
+    if trim_count <= 0 or (2 * trim_count >= n):
+        return sorted_prices
+
+    return sorted_prices[trim_count : n - trim_count]
+
+
+def convert_to_twd(
+    price: float,
+    currency: str = "TWD",
+    exchange_rate: Optional[float] = None,
+    overseas_fee_rate: float = 0.015,
+) -> float:
+    """
+    Convert price to TWD, incorporating a fixed 1.5% overseas transaction fee
+    for foreign currencies (JPY, CNY). Domestic TWD incurs 0% fee.
+    """
+    if price is None:
+        return 0.0
+
+    curr = currency.upper().strip()
+    if curr == "JPY":
+        rate = exchange_rate if exchange_rate is not None else settings.default_exchange_rate_jpy_twd
+        return price * rate * (1.0 + overseas_fee_rate)
+    elif curr in ("CNY", "RMB"):
+        rate = exchange_rate if exchange_rate is not None else getattr(settings, "default_exchange_rate_cny_twd", 4.5)
+        return price * rate * (1.0 + overseas_fee_rate)
+    elif curr in ("TWD", "NTD"):
+        return float(price)
+    else:
+        rate = exchange_rate if exchange_rate is not None else 1.0
+        return price * rate * (1.0 + overseas_fee_rate)
+
+
+class DynamicPriceResult(BaseModel):
+    """Dynamic pricing summary across regional platforms with outlier removal and currency conversion."""
+
+    min_price: Optional[int] = Field(default=None, description="Overall lowest cleaned price in TWD across platforms.")
+    avg_price: Optional[int] = Field(default=None, description="Overall average cleaned price in TWD across platforms.")
+    mercari_min_price: Optional[int] = Field(default=None, description="Mercari minimum price in TWD.")
+    shopee_min_price: Optional[int] = Field(default=None, description="Shopee Taiwan minimum price in TWD.")
+    taobao_min_price: Optional[int] = Field(default=None, description="Taobao minimum price in TWD.")
+    yahoo_tw_min_price: Optional[int] = Field(default=None, description="Yahoo Taiwan minimum price in TWD.")
+    yahoo_jp_min_price: Optional[int] = Field(default=None, description="Yahoo Auctions Japan minimum price in TWD.")
+    rakuten_min_price: Optional[int] = Field(default=None, description="Rakuten Japan minimum price in TWD.")
+    platform_min_prices: dict[str, Optional[int]] = Field(
+        default_factory=dict,
+        description="Dictionary mapping platform name to its minimum price in TWD.",
+    )
+
+
+DEFAULT_PLATFORM_CURRENCIES = {
+    "mercari": "JPY",
+    "buyee": "JPY",
+    "yahoo_jp": "JPY",
+    "yahoo_auctions": "JPY",
+    "rakuten": "JPY",
+    "taobao": "CNY",
+    "shopee": "TWD",
+    "yahoo_tw": "TWD",
+}
+
+
+def calculate_dynamic_platform_prices(
+    platform_raw_prices: dict[str, List[float]],
+    platform_currencies: Optional[dict[str, str]] = None,
+    trim_ratio: float = 0.2,
+    overseas_fee_rate: float = 0.015,
+    jpy_rate: Optional[float] = None,
+    cny_rate: Optional[float] = None,
+) -> DynamicPriceResult:
+    """
+    Process raw search prices from each platform:
+    1. Filter out fake items/empty boxes/scalpers with outlier removal (trim 20% top and bottom).
+    2. Convert JPY and CNY to TWD, incorporating fixed 1.5% overseas transaction fee.
+    3. Calculate overall min_price and avg_price in TWD.
+    4. Calculate platform-specific minimum TWD prices (mercari_min_price, shopee_min_price, etc.).
+    """
+    currencies = dict(DEFAULT_PLATFORM_CURRENCIES)
+    if platform_currencies:
+        currencies.update({k.lower(): v for k, v in platform_currencies.items()})
+
+    result = DynamicPriceResult()
+    all_cleaned_twd: List[float] = []
+
+    for platform_key, raw_prices in platform_raw_prices.items():
+        clean_key = platform_key.lower().strip()
+        curr = currencies.get(clean_key, "TWD")
+
+        # Determine rate
+        effective_rate = jpy_rate if curr == "JPY" else (cny_rate if curr in ("CNY", "RMB") else None)
+
+        # 1. Outlier removal
+        filtered_prices = remove_outliers(raw_prices, trim_ratio=trim_ratio)
+
+        # 2. Currency conversion to TWD with 1.5% overseas fee
+        twd_prices = [
+            convert_to_twd(p, currency=curr, exchange_rate=effective_rate, overseas_fee_rate=overseas_fee_rate)
+            for p in filtered_prices
+        ]
+
+        if twd_prices:
+            plat_min = int(round(min(twd_prices)))
+            result.platform_min_prices[clean_key] = plat_min
+            all_cleaned_twd.extend(twd_prices)
+
+            # Assign to specific attributes
+            if "mercari" in clean_key or clean_key == "buyee":
+                result.mercari_min_price = plat_min
+            elif "shopee" in clean_key:
+                result.shopee_min_price = plat_min
+            elif "taobao" in clean_key:
+                result.taobao_min_price = plat_min
+            elif "yahoo_tw" in clean_key:
+                result.yahoo_tw_min_price = plat_min
+            elif "yahoo_jp" in clean_key or "yahoo_auctions" in clean_key:
+                result.yahoo_jp_min_price = plat_min
+            elif "rakuten" in clean_key:
+                result.rakuten_min_price = plat_min
+        else:
+            result.platform_min_prices[clean_key] = None
+
+    if all_cleaned_twd:
+        result.min_price = int(round(min(all_cleaned_twd)))
+        result.avg_price = int(round(sum(all_cleaned_twd) / len(all_cleaned_twd)))
+
+    return result
+

@@ -46,7 +46,14 @@ from services.parser import (
     ParsedItem,
     parse_fb_post,
 )
-from services.pricing import PricingResult, calculate_landed_cost
+from services.pricing import (
+    DynamicPriceResult,
+    PricingResult,
+    calculate_dynamic_platform_prices,
+    calculate_landed_cost,
+    convert_to_twd,
+    remove_outliers,
+)
 from services.scraper import (
     CrossBorderSearchResult,
     ScrapingBlockedError,
@@ -447,8 +454,8 @@ async def handle_line_events(events: list, access_token: str) -> None:
                     f"⚡ [Silent Auto-Correction] Searching TW/JP/CN with perfected keyword: '{effective_keyword}' (JP: '{effective_jp_keyword}')"
                 )
 
-                # Step 2: Concurrently Search Japanese, Chinese, and Taiwanese platforms simultaneously
-                jp_task = scrape_buyee_prices(effective_jp_keyword)
+                # Step 2: Concurrently Search Japanese, Chinese, and Taiwanese platforms simultaneously (top 15 listings)
+                jp_task = scrape_buyee_prices(effective_jp_keyword, max_items=15)
                 tw_task = search_taiwanese_platforms(effective_keyword)
                 cn_task = search_chinese_platforms(effective_keyword)
                 scraper_result, tw_result, cn_result = await asyncio.gather(jp_task, tw_task, cn_task)
@@ -464,7 +471,18 @@ async def handle_line_events(events: list, access_token: str) -> None:
                     fb_price_twd=fb_price,
                 )
 
-                # Step 4: Build LINE Flex Message UI with Affiliate Tracking & Auto-Correction UX indicator
+                # Step 4: Dynamic Price Calculation (outlier removal, 1.5% overseas conversion, min/avg range)
+                platform_raw_prices = {
+                    "mercari": scraper_result.sample_prices if scraper_result else [],
+                    "shopee": getattr(tw_result, "sample_prices", []),
+                    "yahoo_tw": getattr(tw_result, "sample_prices", []),
+                    "taobao": getattr(cn_result, "sample_prices", []),
+                }
+                dynamic_pricing = calculate_dynamic_platform_prices(
+                    platform_raw_prices=platform_raw_prices,
+                )
+
+                # Step 5: Build LINE Flex Message UI with Dynamic Price Range & Platform Minimums
                 flex_dict = build_price_comparison_flex(
                     parsed_item=parsed_item,
                     pricing_result=pricing_result,
@@ -475,6 +493,15 @@ async def handle_line_events(events: list, access_token: str) -> None:
                     taobao_affiliate_base_url=settings.taobao_affiliate_base_url,
                     yahoo_tw_affiliate_base_url=settings.yahoo_tw_affiliate_base_url,
                     perfected_keyword=effective_keyword,
+                    min_price=dynamic_pricing.min_price,
+                    avg_price=dynamic_pricing.avg_price,
+                    mercari_min_price=dynamic_pricing.mercari_min_price,
+                    shopee_min_price=dynamic_pricing.shopee_min_price,
+                    taobao_min_price=dynamic_pricing.taobao_min_price,
+                    yahoo_tw_min_price=dynamic_pricing.yahoo_tw_min_price,
+                    yahoo_jp_min_price=dynamic_pricing.yahoo_jp_min_price,
+                    rakuten_min_price=dynamic_pricing.rakuten_min_price,
+                    enable_dynamic_buttons=True,
                 )
                 flex_container = FlexContainer.from_dict(flex_dict)
                 alt_text = f"【比價分析】{effective_keyword}".strip()
@@ -523,6 +550,15 @@ async def handle_line_events(events: list, access_token: str) -> None:
                     taobao_affiliate_base_url=settings.taobao_affiliate_base_url,
                     yahoo_tw_affiliate_base_url=settings.yahoo_tw_affiliate_base_url,
                     perfected_keyword=fallback_kw if parsed_item else None,
+                    min_price=None,
+                    avg_price=None,
+                    mercari_min_price=None,
+                    shopee_min_price=None,
+                    taobao_min_price=None,
+                    yahoo_tw_min_price=None,
+                    yahoo_jp_min_price=None,
+                    rakuten_min_price=None,
+                    enable_dynamic_buttons=True,
                 )
                 flex_container = FlexContainer.from_dict(keyword_flex_dict)
                 reply_msg = FlexSendMessage(

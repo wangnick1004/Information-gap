@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     taobao_affiliate_base_url: Optional[str] = Field(default=None, alias="TAOBAO_AFFILIATE_BASE_URL")
     yahoo_tw_affiliate_base_url: Optional[str] = Field(default=None, alias="YAHOO_TW_AFFILIATE_BASE_URL")
     default_exchange_rate_jpy_twd: float = Field(default=0.21, alias="DEFAULT_EXCHANGE_RATE_JPY_TWD")
+    default_exchange_rate_cny_twd: float = Field(default=4.5, alias="DEFAULT_EXCHANGE_RATE_CNY_TWD")
     default_estimated_shipping_twd: int = Field(default=150, alias="DEFAULT_ESTIMATED_SHIPPING_TWD")
     default_proxy_fee_twd: int = Field(default=50, alias="DEFAULT_PROXY_FEE_TWD")
 

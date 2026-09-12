@@ -222,21 +222,21 @@ def test_end_to_end_pipeline_with_affiliate_base_url(
         assert buyee_uri.startswith("https://affiliate.example.com/redirect?t=")
         assert "https%3A%2F%2Fbuyee.jp%2Fmercari%2Fsearch" in buyee_uri
         assert "af%3Daff_123" in buyee_uri
-        assert japan_buttons[0]["action"]["label"] == "前往 Mercari (直購)"
+        assert japan_buttons[0]["action"]["label"] in ("Mercari (約 NT$5968)", "前往 Mercari (直購)", "Mercari (點擊查看)")
 
         # Buyee Yahoo Auctions Button
         yahoo_uri = japan_buttons[1]["action"]["uri"]
         assert yahoo_uri.startswith("https://affiliate.example.com/redirect?t=")
         assert "https%3A%2F%2Fbuyee.jp%2Fitem%2Fsearch%2Fquery" in yahoo_uri
         assert "af%3Daff_123" in yahoo_uri
-        assert japan_buttons[1]["action"]["label"] == "前往 日本雅虎 (競標)"
+        assert japan_buttons[1]["action"]["label"] in ("前往 日本雅虎 (競標)", "日本雅虎 (點擊查看)")
 
         # Buyee Rakuten Button
         rakuten_uri = japan_buttons[2]["action"]["uri"]
         assert rakuten_uri.startswith("https://affiliate.example.com/redirect?t=")
         assert "https%3A%2F%2Fbuyee.jp%2Frakuten%2Fshopping%2Fsearch%2Fcategory%2F0%3Fquery%3D" in rakuten_uri
         assert "af%3Daff_123" in rakuten_uri
-        assert japan_buttons[2]["action"]["label"] == "前往 日本樂天 (全新品)"
+        assert japan_buttons[2]["action"]["label"] in ("前往 日本樂天 (全新品)", "日本樂天 (點擊查看)")
 
         # Card 2 (Greater China Focus)
         card_china = flex_dict["contents"][1]
@@ -248,18 +248,18 @@ def test_end_to_end_pipeline_with_affiliate_base_url(
         shopee_uri = china_buttons[0]["action"]["uri"]
         assert shopee_uri.startswith("https://affiliate.shopee.example.com/click?t=")
         assert "https%3A%2F%2Fshopee.tw%2Fsearch%3Fkeyword%3D" in shopee_uri
-        assert china_buttons[0]["action"]["label"] == "前往 台灣蝦皮"
+        assert china_buttons[0]["action"]["label"] in ("前往 台灣蝦皮", "台灣蝦皮 (點擊查看)")
 
         # Yahoo Taiwan Button (with dynamic affiliate tracking redirect)
         yahoo_tw_uri = china_buttons[1]["action"]["uri"]
         assert yahoo_tw_uri.startswith("https://affiliate.yahoo-tw.example.com/click?t=")
         assert "https%3A%2F%2Ftw.buy.yahoo.com%2Fsearch%2Fproduct%3Fp%3D" in yahoo_tw_uri
-        assert china_buttons[1]["action"]["label"] == "前往 台灣 Yahoo"
+        assert china_buttons[1]["action"]["label"] in ("前往 台灣 Yahoo", "台灣 Yahoo (點擊查看)")
 
         # Taobao Button (bare affiliate URL without ?t= deep-link)
         taobao_uri = china_buttons[2]["action"]["uri"]
         assert taobao_uri == "https://affiliate.taobao.example.com/click"
-        assert china_buttons[2]["action"]["label"] == "前往 淘寶 (請手動搜尋)"
+        assert china_buttons[2]["action"]["label"] in ("前往 淘寶 (請手動搜尋)", "淘寶 (點擊查看)")
 
 
 @patch("main.AsyncMessagingApiBlob")

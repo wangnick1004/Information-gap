@@ -208,6 +208,40 @@ def append_affiliate_id(
     return target_url
 
 
+def format_button_label(
+    platform_name: str,
+    price: Optional[Union[int, float, str]],
+    default_action_label: str,
+    enable_dynamic: bool = False,
+) -> str:
+    """
+    Format button text/label according to dynamic pricing rules:
+    - If price is provided and > 0: '{platform_name} (約 NT${price})'
+    - If dynamic is enabled and price is None/0/empty: '{platform_name} (點擊查看)'
+    - Otherwise default to default_action_label (e.g. '前往 Mercari (直購)').
+    """
+    has_price = price is not None and str(price).strip() != "" and str(price).strip() != "0"
+    if has_price:
+        try:
+            num_val = float(str(price).replace(",", ""))
+            if num_val <= 0:
+                has_price = False
+            else:
+                price_str = f"{int(round(num_val))}"
+        except ValueError:
+            price_str = str(price).strip()
+    else:
+        price_str = ""
+
+    if has_price:
+        return f"{platform_name} (約 NT${price_str})"
+
+    if enable_dynamic:
+        return f"{platform_name} (點擊查看)"
+
+    return default_action_label
+
+
 def build_keyword_flex_message(
     japanese_keyword: str,
     search_url: str,
@@ -220,6 +254,16 @@ def build_keyword_flex_message(
     yahoo_tw_affiliate_base_url: Optional[str] = None,
     image_url: Optional[str] = None,
     perfected_keyword: Optional[str] = None,
+    min_price: Optional[Union[int, float, str]] = None,
+    avg_price: Optional[Union[int, float, str]] = None,
+    mercari_min_price: Optional[Union[int, float, str]] = None,
+    yahoo_jp_min_price: Optional[Union[int, float, str]] = None,
+    rakuten_min_price: Optional[Union[int, float, str]] = None,
+    shopee_min_price: Optional[Union[int, float, str]] = None,
+    yahoo_tw_min_price: Optional[Union[int, float, str]] = None,
+    taobao_min_price: Optional[Union[int, float, str]] = None,
+    platform_min_prices: Optional[Dict[str, Any]] = None,
+    enable_dynamic_buttons: Optional[bool] = None,
 ) -> Dict[str, Any]:
     """
     Construct a LINE Flex Carousel containing 2 cards:
@@ -236,28 +280,49 @@ def build_keyword_flex_message(
     taobao_url = build_taobao_search_url(zh_kw, taobao_affiliate_base_url=taobao_affiliate_base_url)
     yahoo_tw_url = build_yahoo_tw_search_url(zh_kw, yahoo_tw_affiliate_base_url=yahoo_tw_affiliate_base_url)
 
-    logger.info(
-        f"[Keyword Flex URLs Constructed]\n"
-        f"  Buyee Mercari: {final_buyee_url}\n"
-        f"  Buyee Yahoo:   {yahoo_url}\n"
-        f"  Buyee Rakuten: {rakuten_url}\n"
-        f"  Shopee:        {shopee_url}\n"
-        f"  Taobao:        {taobao_url}\n"
-        f"  Yahoo TW:      {yahoo_tw_url}"
-    )
-    print(
-        f"[DEBUG] [Keyword Flex URLs Constructed]\n"
-        f"  Buyee Mercari: {final_buyee_url}\n"
-        f"  Buyee Yahoo:   {yahoo_url}\n"
-        f"  Buyee Rakuten: {rakuten_url}\n"
-        f"  Shopee:        {shopee_url}\n"
-        f"  Taobao:        {taobao_url}\n"
-        f"  Yahoo TW:      {yahoo_tw_url}",
-        flush=True,
+    if platform_min_prices:
+        mercari_min_price = mercari_min_price or platform_min_prices.get("mercari") or platform_min_prices.get("buyee")
+        yahoo_jp_min_price = yahoo_jp_min_price or platform_min_prices.get("yahoo_jp") or platform_min_prices.get("yahoo_auctions")
+        rakuten_min_price = rakuten_min_price or platform_min_prices.get("rakuten")
+        shopee_min_price = shopee_min_price or platform_min_prices.get("shopee")
+        yahoo_tw_min_price = yahoo_tw_min_price or platform_min_prices.get("yahoo_tw")
+        taobao_min_price = taobao_min_price or platform_min_prices.get("taobao")
+
+    is_dynamic = enable_dynamic_buttons if enable_dynamic_buttons is not None else any(
+        x is not None for x in [
+            min_price, avg_price, mercari_min_price, yahoo_jp_min_price,
+            rakuten_min_price, shopee_min_price, yahoo_tw_min_price, taobao_min_price, platform_min_prices
+        ]
     )
 
     hero_img = image_url or DEFAULT_PLACEHOLDER_IMAGE
     correction_text = perfected_keyword.strip() if perfected_keyword and perfected_keyword.strip() else None
+
+    # Price range header block
+    price_range_header = []
+    if min_price is not None and avg_price is not None and str(min_price).strip() and str(avg_price).strip():
+        fmt_min = f"{int(round(float(min_price)))}" if isinstance(min_price, (int, float)) or (isinstance(min_price, str) and min_price.replace(",", "").isdigit()) else str(min_price)
+        fmt_avg = f"{int(round(float(avg_price)))}" if isinstance(avg_price, (int, float)) or (isinstance(avg_price, str) and avg_price.replace(",", "").isdigit()) else str(avg_price)
+        price_range_header = [
+            {
+                "type": "text",
+                "text": f"💰 跨國均價區間：NT$ {fmt_min} ~ NT$ {fmt_avg}",
+                "size": "xs",
+                "color": "#1E3A8A",
+                "weight": "bold",
+                "wrap": True,
+                "margin": "xs",
+            }
+        ]
+
+    # Resolve button labels
+    mercari_btn_text = format_button_label("Mercari", mercari_min_price, "前往 Mercari (直購)", is_dynamic)
+    yahoo_jp_btn_text = format_button_label("日本雅虎", yahoo_jp_min_price, "前往 日本雅虎 (競標)", is_dynamic)
+    rakuten_btn_text = format_button_label("日本樂天", rakuten_min_price, "前往 日本樂天 (全新品)", is_dynamic)
+
+    shopee_btn_text = format_button_label("台灣蝦皮", shopee_min_price, "前往 台灣蝦皮", is_dynamic)
+    yahoo_tw_btn_text = format_button_label("台灣 Yahoo", yahoo_tw_min_price, "前往 台灣 Yahoo", is_dynamic)
+    taobao_btn_text = format_button_label("淘寶", taobao_min_price, "前往 淘寶 (請手動搜尋)", is_dynamic)
 
     # Card 1: Japan Focus
     card_japan: Dict[str, Any] = {
@@ -291,6 +356,7 @@ def build_keyword_flex_message(
                     if correction_text
                     else []
                 ),
+                *price_range_header,
             ],
         },
         "body": {
@@ -340,9 +406,10 @@ def build_keyword_flex_message(
                     "style": "primary",
                     "color": BUYEE_GREEN_COLOR,
                     "height": "sm",
+                    "text": mercari_btn_text,
                     "action": {
                         "type": "uri",
-                        "label": "前往 Mercari (直購)",
+                        "label": mercari_btn_text,
                         "uri": final_buyee_url,
                     },
                 },
@@ -351,9 +418,10 @@ def build_keyword_flex_message(
                     "style": "primary",
                     "color": YAHOO_AUCTIONS_COLOR,
                     "height": "sm",
+                    "text": yahoo_jp_btn_text,
                     "action": {
                         "type": "uri",
-                        "label": "前往 日本雅虎 (競標)",
+                        "label": yahoo_jp_btn_text,
                         "uri": yahoo_url,
                     },
                 },
@@ -362,9 +430,10 @@ def build_keyword_flex_message(
                     "style": "primary",
                     "color": RAKUTEN_RED_COLOR,
                     "height": "sm",
+                    "text": rakuten_btn_text,
                     "action": {
                         "type": "uri",
-                        "label": "前往 日本樂天 (全新品)",
+                        "label": rakuten_btn_text,
                         "uri": rakuten_url,
                     },
                 },
@@ -404,6 +473,7 @@ def build_keyword_flex_message(
                     if correction_text
                     else []
                 ),
+                *price_range_header,
             ],
         },
         "body": {
@@ -461,9 +531,10 @@ def build_keyword_flex_message(
                     "style": "primary",
                     "color": SHOPEE_ORANGE_COLOR,
                     "height": "sm",
+                    "text": shopee_btn_text,
                     "action": {
                         "type": "uri",
-                        "label": "前往 台灣蝦皮",
+                        "label": shopee_btn_text,
                         "uri": shopee_url,
                     },
                 },
@@ -472,9 +543,10 @@ def build_keyword_flex_message(
                     "style": "primary",
                     "color": YAHOO_TW_PURPLE_COLOR,
                     "height": "sm",
+                    "text": yahoo_tw_btn_text,
                     "action": {
                         "type": "uri",
-                        "label": "前往 台灣 Yahoo",
+                        "label": yahoo_tw_btn_text,
                         "uri": yahoo_tw_url,
                     },
                 },
@@ -483,9 +555,10 @@ def build_keyword_flex_message(
                     "style": "primary",
                     "color": TAOBAO_RED_ORANGE_COLOR,
                     "height": "sm",
+                    "text": taobao_btn_text,
                     "action": {
                         "type": "uri",
-                        "label": "前往 淘寶 (請手動搜尋)",
+                        "label": taobao_btn_text,
                         "uri": taobao_url,
                     },
                 },
@@ -511,6 +584,16 @@ def build_price_comparison_flex(
     taobao_affiliate_base_url: Optional[str] = None,
     yahoo_tw_affiliate_base_url: Optional[str] = None,
     perfected_keyword: Optional[str] = None,
+    min_price: Optional[Union[int, float, str]] = None,
+    avg_price: Optional[Union[int, float, str]] = None,
+    mercari_min_price: Optional[Union[int, float, str]] = None,
+    yahoo_jp_min_price: Optional[Union[int, float, str]] = None,
+    rakuten_min_price: Optional[Union[int, float, str]] = None,
+    shopee_min_price: Optional[Union[int, float, str]] = None,
+    yahoo_tw_min_price: Optional[Union[int, float, str]] = None,
+    taobao_min_price: Optional[Union[int, float, str]] = None,
+    platform_min_prices: Optional[Dict[str, Any]] = None,
+    enable_dynamic_buttons: Optional[bool] = None,
 ) -> Dict[str, Any]:
     """
     Construct a rich LINE Flex Carousel comparing FB and cross-border market prices across:
@@ -519,6 +602,21 @@ def build_price_comparison_flex(
     """
     image_url = scraper_result.representative_image_url or DEFAULT_PLACEHOLDER_IMAGE
     final_buyee_url = append_affiliate_id(scraper_result.search_url, affiliate_id=affiliate_id, affiliate_base_url=affiliate_base_url)
+
+    if platform_min_prices:
+        mercari_min_price = mercari_min_price or platform_min_prices.get("mercari") or platform_min_prices.get("buyee")
+        yahoo_jp_min_price = yahoo_jp_min_price or platform_min_prices.get("yahoo_jp") or platform_min_prices.get("yahoo_auctions")
+        rakuten_min_price = rakuten_min_price or platform_min_prices.get("rakuten")
+        shopee_min_price = shopee_min_price or platform_min_prices.get("shopee")
+        yahoo_tw_min_price = yahoo_tw_min_price or platform_min_prices.get("yahoo_tw")
+        taobao_min_price = taobao_min_price or platform_min_prices.get("taobao")
+
+    is_dynamic = enable_dynamic_buttons if enable_dynamic_buttons is not None else any(
+        x is not None for x in [
+            min_price, avg_price, mercari_min_price, yahoo_jp_min_price,
+            rakuten_min_price, shopee_min_price, yahoo_tw_min_price, taobao_min_price, platform_min_prices
+        ]
+    )
 
     correction_text = (
         perfected_keyword
@@ -563,6 +661,32 @@ def build_price_comparison_flex(
         f"  Yahoo TW:      {yahoo_tw_url}",
         flush=True,
     )
+
+    # Price range header block
+    price_range_header = []
+    if min_price is not None and avg_price is not None and str(min_price).strip() and str(avg_price).strip():
+        fmt_min = f"{int(round(float(min_price)))}" if isinstance(min_price, (int, float)) or (isinstance(min_price, str) and min_price.replace(",", "").isdigit()) else str(min_price)
+        fmt_avg = f"{int(round(float(avg_price)))}" if isinstance(avg_price, (int, float)) or (isinstance(avg_price, str) and avg_price.replace(",", "").isdigit()) else str(avg_price)
+        price_range_header = [
+            {
+                "type": "text",
+                "text": f"💰 跨國均價區間：NT$ {fmt_min} ~ NT$ {fmt_avg}",
+                "size": "xs",
+                "color": "#1E3A8A",
+                "weight": "bold",
+                "wrap": True,
+                "margin": "xs",
+            }
+        ]
+
+    # Resolve button labels
+    mercari_btn_text = format_button_label("Mercari", mercari_min_price, "前往 Mercari (直購)", is_dynamic)
+    yahoo_jp_btn_text = format_button_label("日本雅虎", yahoo_jp_min_price, "前往 日本雅虎 (競標)", is_dynamic)
+    rakuten_btn_text = format_button_label("日本樂天", rakuten_min_price, "前往 日本樂天 (全新品)", is_dynamic)
+
+    shopee_btn_text = format_button_label("台灣蝦皮", shopee_min_price, "前往 台灣蝦皮", is_dynamic)
+    yahoo_tw_btn_text = format_button_label("台灣 Yahoo", yahoo_tw_min_price, "前往 台灣 Yahoo", is_dynamic)
+    taobao_btn_text = format_button_label("淘寶", taobao_min_price, "前往 淘寶 (請手動搜尋)", is_dynamic)
 
     # Format values for display
     fb_price_str = (
@@ -623,6 +747,7 @@ def build_price_comparison_flex(
                     if correction_text
                     else []
                 ),
+                *price_range_header,
             ],
         },
         "body": {
@@ -781,9 +906,10 @@ def build_price_comparison_flex(
                     "style": "primary",
                     "color": BUYEE_GREEN_COLOR,
                     "height": "sm",
+                    "text": mercari_btn_text,
                     "action": {
                         "type": "uri",
-                        "label": "前往 Mercari (直購)",
+                        "label": mercari_btn_text,
                         "uri": final_buyee_url,
                     },
                 },
@@ -792,9 +918,10 @@ def build_price_comparison_flex(
                     "style": "primary",
                     "color": YAHOO_AUCTIONS_COLOR,
                     "height": "sm",
+                    "text": yahoo_jp_btn_text,
                     "action": {
                         "type": "uri",
-                        "label": "前往 日本雅虎 (競標)",
+                        "label": yahoo_jp_btn_text,
                         "uri": yahoo_url,
                     },
                 },
@@ -803,9 +930,10 @@ def build_price_comparison_flex(
                     "style": "primary",
                     "color": RAKUTEN_RED_COLOR,
                     "height": "sm",
+                    "text": rakuten_btn_text,
                     "action": {
                         "type": "uri",
-                        "label": "前往 日本樂天 (全新品)",
+                        "label": rakuten_btn_text,
                         "uri": rakuten_url,
                     },
                 },
@@ -853,6 +981,7 @@ def build_price_comparison_flex(
                     if correction_text
                     else []
                 ),
+                *price_range_header,
             ],
         },
         "body": {
@@ -897,9 +1026,10 @@ def build_price_comparison_flex(
                     "style": "primary",
                     "color": SHOPEE_ORANGE_COLOR,
                     "height": "sm",
+                    "text": shopee_btn_text,
                     "action": {
                         "type": "uri",
-                        "label": "前往 台灣蝦皮",
+                        "label": shopee_btn_text,
                         "uri": shopee_url,
                     },
                 },
@@ -908,9 +1038,10 @@ def build_price_comparison_flex(
                     "style": "primary",
                     "color": YAHOO_TW_PURPLE_COLOR,
                     "height": "sm",
+                    "text": yahoo_tw_btn_text,
                     "action": {
                         "type": "uri",
-                        "label": "前往 台灣 Yahoo",
+                        "label": yahoo_tw_btn_text,
                         "uri": yahoo_tw_url,
                     },
                 },
@@ -919,9 +1050,10 @@ def build_price_comparison_flex(
                     "style": "primary",
                     "color": TAOBAO_RED_ORANGE_COLOR,
                     "height": "sm",
+                    "text": taobao_btn_text,
                     "action": {
                         "type": "uri",
-                        "label": "前往 淘寶 (請手動搜尋)",
+                        "label": taobao_btn_text,
                         "uri": taobao_url,
                     },
                 },
@@ -941,3 +1073,4 @@ def build_price_comparison_flex(
         "type": "carousel",
         "contents": [card_japan, card_china],
     }
+

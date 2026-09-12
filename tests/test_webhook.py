@@ -636,8 +636,8 @@ def test_webhook_string_normalization_and_silent_autocorrect(
     called_post_text = mock_parse_fb_post.call_args[1].get("post_text") or mock_parse_fb_post.call_args[0][0]
     assert called_post_text == "switch"
 
-    # 2. Verify silent execution: scraper was directly called with perfected_keyword
-    mock_scrape_buyee_prices.assert_awaited_once_with("Nintendo Switch")
+    # 2. Verify silent execution: scraper was directly called with perfected_keyword and top 15 items
+    mock_scrape_buyee_prices.assert_awaited_once_with("Nintendo Switch", max_items=15)
 
     # 3. Verify reply_message sends a FlexMessage (no Quick Reply interception)
     mock_api.reply_message.assert_awaited_once()
@@ -647,11 +647,17 @@ def test_webhook_string_normalization_and_silent_autocorrect(
     msg = reply_req.messages[0]
     assert isinstance(msg, FlexMessage)
 
-    # 4. Verify UX feedback indicator is present in the header: "🔎 已自動為您精準鎖定：{perfected_keyword}"
+    # 4. Verify UX feedback indicator and price range are present in the header
     card1 = msg.contents.contents[0]
     header_contents = card1.header.contents
     assert len(header_contents) >= 2
     assert header_contents[1].text == "🔎 已自動為您精準鎖定：Nintendo Switch"
+    assert any("💰 跨國均價區間：" in (c.text or "") for c in header_contents)
+
+    # 5. Verify platform buttons have injected minimum prices and fallbacks
+    c1_btns = [c for c in card1.footer.contents if getattr(c, "type", None) == "button"]
+    assert "Mercari (約 NT$" in c1_btns[0].action.label
+    assert c1_btns[1].action.label == "日本雅虎 (點擊查看)"
 
 
 @patch("main.AsyncApiClient")
@@ -735,6 +741,8 @@ def test_webhook_silent_autocorrect_even_on_zero_results(
     card1 = msg.contents.contents[0]
     header_contents = card1.header.contents
     assert header_contents[1].text == "🔎 已自動為您精準鎖定：Sony WH-1000XM5"
+    c1_btns = [c for c in card1.footer.contents if getattr(c, "type", None) == "button"]
+    assert c1_btns[0].action.label == "Mercari (點擊查看)"
 
 
 @patch("main.AsyncApiClient")

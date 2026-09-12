@@ -425,3 +425,150 @@ def test_build_price_comparison_flex_with_affiliate_base_url():
     assert taobao_btn_uri == "https://track.taobao-affiliate.com/redirect"
     assert card2_buttons[2]["action"]["label"] == "前往 淘寶 (請手動搜尋)"
 
+
+def test_build_flex_with_dynamic_price_range_and_button_min_prices():
+    """Test Header/Hero price range block and platform button min price injection."""
+    parsed = ParsedAnimeItem(
+        franchise="Nintendo",
+        character="Switch",
+        item_type="主機",
+        keyword_jp="Nintendo Switch",
+        keyword_zh="Nintendo Switch",
+        fb_price_twd=8000,
+        is_anime_merch=True,
+    )
+    pricing = PricingResult(
+        price_jpy=25000.0,
+        exchange_rate=0.21,
+        proxy_fee_twd=50.0,
+        shipping_twd=150.0,
+        landed_cost_twd=5450.0,
+        is_overpriced=True,
+        fb_price_twd=8000.0,
+        price_difference_twd=2550.0,
+    )
+    scraper = ScrapingResult(
+        query="Nintendo Switch",
+        search_url="https://buyee.jp/mercari/search?keyword=test",
+        lowest_price_jpy=20000.0,
+        median_price_jpy=25000.0,
+        representative_image_url="https://example.com/switch.jpg",
+        sample_prices=[20000.0, 22000.0, 25000.0],
+        total_found=3,
+    )
+
+    flex_dict = build_price_comparison_flex(
+        parsed_item=parsed,
+        pricing_result=pricing,
+        scraper_result=scraper,
+        min_price=4260,
+        avg_price=5500,
+        mercari_min_price=4260,
+        shopee_min_price=4800,
+        taobao_min_price=4900,
+        yahoo_tw_min_price=5100,
+        yahoo_jp_min_price=4300,
+        rakuten_min_price=5200,
+        enable_dynamic_buttons=True,
+    )
+
+    # 1. Verify Header prominent price range text in Card 1 and Card 2
+    card1 = flex_dict["contents"][0]
+    card1_header_texts = [c.get("text", "") for c in card1["header"]["contents"]]
+    assert any("💰 跨國均價區間：NT$ 4260 ~ NT$ 5500" in t for t in card1_header_texts)
+
+    card2 = flex_dict["contents"][1]
+    card2_header_texts = [c.get("text", "") for c in card2["header"]["contents"]]
+    assert any("💰 跨國均價區間：NT$ 4260 ~ NT$ 5500" in t for t in card2_header_texts)
+
+    # 2. Verify platform buttons have injected minimum prices formatted correctly
+    c1_btns = [c for c in card1["footer"]["contents"] if c.get("type") == "button"]
+    assert c1_btns[0]["text"] == "Mercari (約 NT$4260)"
+    assert c1_btns[0]["action"]["label"] == "Mercari (約 NT$4260)"
+    assert c1_btns[1]["text"] == "日本雅虎 (約 NT$4300)"
+    assert c1_btns[1]["action"]["label"] == "日本雅虎 (約 NT$4300)"
+    assert c1_btns[2]["text"] == "日本樂天 (約 NT$5200)"
+    assert c1_btns[2]["action"]["label"] == "日本樂天 (約 NT$5200)"
+
+    c2_btns = [c for c in card2["footer"]["contents"] if c.get("type") == "button"]
+    assert c2_btns[0]["text"] == "台灣蝦皮 (約 NT$4800)"
+    assert c2_btns[0]["action"]["label"] == "台灣蝦皮 (約 NT$4800)"
+    assert c2_btns[1]["text"] == "台灣 Yahoo (約 NT$5100)"
+    assert c2_btns[1]["action"]["label"] == "台灣 Yahoo (約 NT$5100)"
+    assert c2_btns[2]["text"] == "淘寶 (約 NT$4900)"
+    assert c2_btns[2]["action"]["label"] == "淘寶 (約 NT$4900)"
+
+    # 3. Verify strict LINE SDK validation
+    container = FlexContainer.from_dict(flex_dict)
+    assert container is not None
+
+
+def test_build_flex_button_fallbacks_when_prices_none_or_zero():
+    """Test conditional fallback for platform buttons when prices are None, 0, or empty."""
+    parsed = ParsedAnimeItem(
+        franchise="Sony",
+        character="Headphones",
+        item_type="耳機",
+        keyword_jp="Sony 耳機",
+        keyword_zh="Sony 耳機",
+        fb_price_twd=None,
+        is_anime_merch=True,
+    )
+    pricing = PricingResult(
+        price_jpy=1000.0,
+        exchange_rate=0.21,
+        proxy_fee_twd=50.0,
+        shipping_twd=150.0,
+        landed_cost_twd=410.0,
+        is_overpriced=False,
+        fb_price_twd=None,
+        price_difference_twd=None,
+    )
+    scraper = ScrapingResult(
+        query="Sony 耳機",
+        search_url="https://buyee.jp/mercari/search?keyword=test",
+        lowest_price_jpy=0.0,
+        median_price_jpy=0.0,
+        representative_image_url=None,
+        sample_prices=[],
+        total_found=0,
+    )
+
+    # All platform prices are None or 0
+    flex_dict = build_price_comparison_flex(
+        parsed_item=parsed,
+        pricing_result=pricing,
+        scraper_result=scraper,
+        min_price=None,
+        avg_price=None,
+        mercari_min_price=None,
+        yahoo_jp_min_price=0,
+        rakuten_min_price="",
+        shopee_min_price=None,
+        yahoo_tw_min_price=0,
+        taobao_min_price=None,
+        enable_dynamic_buttons=True,
+    )
+
+    card1 = flex_dict["contents"][0]
+    c1_btns = [c for c in card1["footer"]["contents"] if c.get("type") == "button"]
+    assert c1_btns[0]["text"] == "Mercari (點擊查看)"
+    assert c1_btns[0]["action"]["label"] == "Mercari (點擊查看)"
+    assert c1_btns[1]["text"] == "日本雅虎 (點擊查看)"
+    assert c1_btns[1]["action"]["label"] == "日本雅虎 (點擊查看)"
+    assert c1_btns[2]["text"] == "日本樂天 (點擊查看)"
+    assert c1_btns[2]["action"]["label"] == "日本樂天 (點擊查看)"
+
+    card2 = flex_dict["contents"][1]
+    c2_btns = [c for c in card2["footer"]["contents"] if c.get("type") == "button"]
+    assert c2_btns[0]["text"] == "台灣蝦皮 (點擊查看)"
+    assert c2_btns[0]["action"]["label"] == "台灣蝦皮 (點擊查看)"
+    assert c2_btns[1]["text"] == "台灣 Yahoo (點擊查看)"
+    assert c2_btns[1]["action"]["label"] == "台灣 Yahoo (點擊查看)"
+    assert c2_btns[2]["text"] == "淘寶 (點擊查看)"
+    assert c2_btns[2]["action"]["label"] == "淘寶 (點擊查看)"
+
+    container = FlexContainer.from_dict(flex_dict)
+    assert container is not None
+
+
