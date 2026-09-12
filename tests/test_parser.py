@@ -811,6 +811,28 @@ def test_parsed_item_suggested_term_schema():
     assert data["suggested_term"] == "Apple iPhone 15"
 
 
+def test_parsed_item_perfected_keyword_schema():
+    """Test that ParsedItem schema supports perfected_keyword field with fallback."""
+    from services.parser import ParsedItem
+
+    # Default falls back to keyword_zh or franchise + character
+    item_default = ParsedItem(
+        franchise="Nintendo",
+        character="Switch",
+    )
+    assert item_default.perfected_keyword == "Nintendo Switch"
+
+    # Explicit perfected_keyword
+    item_explicit = ParsedItem(
+        franchise="Nintendo",
+        character="Switch",
+        perfected_keyword="Nintendo Switch OLED",
+    )
+    assert item_explicit.perfected_keyword == "Nintendo Switch OLED"
+    data = item_explicit.model_dump()
+    assert data["perfected_keyword"] == "Nintendo Switch OLED"
+
+
 def test_fast_regex_parse_generic_terms_do_not_bypass():
     """Test that generic single-word terms without digits do not bypass LLM, ensuring suggested_term is generated."""
     from services.parser import fast_regex_parse

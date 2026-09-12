@@ -559,34 +559,45 @@ def test_webhook_rate_limit_interception(mock_messaging_api_class, mock_api_clie
 
 @patch("main.AsyncApiClient")
 @patch("main.AsyncMessagingApi")
+@patch("main.scrape_buyee_prices")
 @patch("main.parse_fb_post")
-def test_webhook_string_normalization_and_quick_reply_on_llm_suggestion(
-    mock_parse_fb_post, mock_messaging_api_class, mock_api_client_class
+def test_webhook_string_normalization_and_silent_autocorrect(
+    mock_parse_fb_post, mock_scrape_buyee_prices, mock_messaging_api_class, mock_api_client_class
 ):
-    """Test that incoming message is normalized with .strip().lower() and LLM suggestion intercepts with Quick Reply."""
-    from linebot.v3.messaging import TextMessage
+    """Test that incoming message is normalized with .strip().lower(), LLM produces perfected_keyword, and search is executed silently with UX feedback indicator."""
+    from linebot.v3.messaging import FlexMessage
     from services.parser import ParsedItem
+    from services.scraper import ScrapingResult
 
     mock_api = AsyncMock()
     mock_messaging_api_class.return_value = mock_api
 
-    # LLM recommends standard term 'Apple iPhone 15' for broad query 'iphone'
+    # LLM autocorrects generic query 'switch' to perfected_keyword 'Nintendo Switch'
     mock_parse_fb_post.return_value = ParsedItem(
-        franchise="Apple",
-        character="iPhone 15",
-        item_type="智慧型手機",
-        keyword_jp="iPhone 15",
-        keyword_zh="iPhone 15",
-        search_query_ja="iPhone 15",
-        suggested_term="Apple iPhone 15",
-        fb_price_twd=None,
+        franchise="任天堂",
+        character="Switch",
+        item_type="遊戲主機",
+        keyword_jp="Nintendo Switch",
+        keyword_zh="Nintendo Switch",
+        search_query_ja="Nintendo Switch",
+        perfected_keyword="Nintendo Switch",
+        fb_price_twd=8500,
         is_anime_merch=True,
+    )
+    mock_scrape_buyee_prices.return_value = ScrapingResult(
+        query="Nintendo Switch",
+        search_url="https://buyee.jp/mercari/search?keyword=NintendoSwitch",
+        lowest_price_jpy=25000.0,
+        median_price_jpy=28000.0,
+        representative_image_url="https://example.com/switch.jpg",
+        sample_prices=[25000.0, 28000.0, 30000.0],
+        total_found=3,
     )
 
     secret = "test_secret_123"
     token = "test_token_456"
 
-    # Input has leading/trailing spaces and uppercase characters
+    # Input has leading/trailing spaces and mixed uppercase characters
     payload = {
         "destination": "U1234567890",
         "events": [
@@ -595,12 +606,12 @@ def test_webhook_string_normalization_and_quick_reply_on_llm_suggestion(
                 "message": {
                     "type": "text",
                     "id": "100010",
-                    "text": "   IPHONE   ",
+                    "text": "   sWiTcH   ",
                     "quoteToken": "quote123",
                 },
                 "timestamp": 1625641600000,
-                "source": {"type": "user", "userId": "U_quick_reply_user"},
-                "replyToken": "token_qr_123",
+                "source": {"type": "user", "userId": "U_autocorrect_user"},
+                "replyToken": "token_ac_123",
                 "mode": "active",
                 "webhookEventId": "01FZ74A0TDDPYRVKNK77XKC3ZR",
                 "deliveryContext": {"isRedelivery": False},
@@ -620,37 +631,38 @@ def test_webhook_string_normalization_and_quick_reply_on_llm_suggestion(
         )
         assert response.status_code == 200
 
-    # Verify that parse_fb_post received the normalized string 'iphone'
+    # 1. Verify that parse_fb_post received the normalized string 'switch' (.strip().lower())
     mock_parse_fb_post.assert_awaited_once()
     called_post_text = mock_parse_fb_post.call_args[1].get("post_text") or mock_parse_fb_post.call_args[0][0]
-    assert called_post_text == "iphone"
+    assert called_post_text == "switch"
 
-    # Verify that reply_message was called with TextSendMessage containing QuickReply
+    # 2. Verify silent execution: scraper was directly called with perfected_keyword
+    mock_scrape_buyee_prices.assert_awaited_once_with("Nintendo Switch")
+
+    # 3. Verify reply_message sends a FlexMessage (no Quick Reply interception)
     mock_api.reply_message.assert_awaited_once()
     reply_req = mock_api.reply_message.call_args[0][0]
     assert len(reply_req.messages) == 1
 
     msg = reply_req.messages[0]
-    assert isinstance(msg, TextMessage)
-    assert msg.text == "💡 找不到精準結果嗎？您可能在尋找的商品是："
-    assert msg.quick_reply is not None
-    assert len(msg.quick_reply.items) == 1
+    assert isinstance(msg, FlexMessage)
 
-    qr_item = msg.quick_reply.items[0]
-    assert qr_item.action.type == "message"
-    assert qr_item.action.text == "Apple iPhone 15"
-    assert qr_item.action.label == "Apple iPhone 15"
+    # 4. Verify UX feedback indicator is present in the header: "🔎 已自動為您精準鎖定：{perfected_keyword}"
+    card1 = msg.contents.contents[0]
+    header_contents = card1.header.contents
+    assert len(header_contents) >= 2
+    assert header_contents[1].text == "🔎 已自動為您精準鎖定：Nintendo Switch"
 
 
 @patch("main.AsyncApiClient")
 @patch("main.AsyncMessagingApi")
 @patch("main.scrape_buyee_prices")
 @patch("main.parse_fb_post")
-def test_webhook_quick_reply_on_poor_or_zero_results(
+def test_webhook_silent_autocorrect_even_on_zero_results(
     mock_parse_fb_post, mock_scrape_buyee_prices, mock_messaging_api_class, mock_api_client_class
 ):
-    """Test that when search yields zero/poor results, normal Flex Message is intercepted with Quick Reply."""
-    from linebot.v3.messaging import TextMessage
+    """Test that when search yields zero results, it still silently returns Flex Message with UX indicator instead of Quick Reply."""
+    from linebot.v3.messaging import FlexMessage
     from services.parser import ParsedItem
     from services.scraper import ScrapingResult
 
@@ -661,8 +673,10 @@ def test_webhook_quick_reply_on_poor_or_zero_results(
         franchise="Sony",
         character="WH-1000XM5",
         item_type="ヘッドホン",
+        keyword_jp="Sony WH-1000XM5",
+        keyword_zh="Sony WH-1000XM5",
         search_query_ja="Sony WH-1000XM5",
-        suggested_term="Sony WH-1000XM5",
+        perfected_keyword="Sony WH-1000XM5",
         fb_price_twd=None,
         is_anime_merch=True,
     )
@@ -717,10 +731,10 @@ def test_webhook_quick_reply_on_poor_or_zero_results(
     mock_api.reply_message.assert_awaited_once()
     reply_req = mock_api.reply_message.call_args[0][0]
     msg = reply_req.messages[0]
-    assert isinstance(msg, TextMessage)
-    assert msg.text == "💡 找不到精準結果嗎？您可能在尋找的商品是："
-    assert msg.quick_reply is not None
-    assert msg.quick_reply.items[0].action.text == "Sony WH-1000XM5"
+    assert isinstance(msg, FlexMessage)
+    card1 = msg.contents.contents[0]
+    header_contents = card1.header.contents
+    assert header_contents[1].text == "🔎 已自動為您精準鎖定：Sony WH-1000XM5"
 
 
 @patch("main.AsyncApiClient")

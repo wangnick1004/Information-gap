@@ -431,79 +431,27 @@ async def handle_line_events(events: list, access_token: str) -> None:
                     vision_prompt=GEMINI_VISION_PROMPT if image_bytes else None,
                 )
 
-                # Check if LLM strongly recommends a standard term (e.g., 'iphone' -> 'Apple iPhone 15')
-                suggested_term = (
-                    parsed_item.suggested_term.strip()
-                    if parsed_item and parsed_item.suggested_term
-                    else None
-                )
-                has_strong_recommendation = bool(
-                    suggested_term
-                    and user_text
-                    and suggested_term.lower() != user_text.lower()
-                )
+                # Silent Execution: Directly use perfected_keyword across all regional searches
+                effective_keyword = (
+                    parsed_item.perfected_keyword
+                    or parsed_item.keyword_zh
+                    or f"{parsed_item.franchise} {parsed_item.character}"
+                ).strip()
+                effective_jp_keyword = (
+                    parsed_item.search_query_ja
+                    or parsed_item.keyword_jp
+                    or effective_keyword
+                ).strip()
 
-                if has_strong_recommendation:
-                    logger.info(
-                        f"💡 [LLM Suggestion] Strongly recommended standard term: '{suggested_term}' for query '{user_text}'. Intercepting with Quick Reply."
-                    )
-                    quick_reply_button = QuickReplyItem(
-                        action=MessageAction(
-                            label=suggested_term[:20],
-                            text=suggested_term,
-                        )
-                    )
-                    reply_msg = TextSendMessage(
-                        text="💡 找不到精準結果嗎？您可能在尋找的商品是：",
-                        quick_reply=QuickReply(items=[quick_reply_button]),
-                    )
-                    await line_bot_api.reply_message(
-                        ReplyMessageRequest(
-                            reply_token=event.reply_token,
-                            messages=[reply_msg],
-                        )
-                    )
-                    continue
+                logger.info(
+                    f"⚡ [Silent Auto-Correction] Searching TW/JP/CN with perfected keyword: '{effective_keyword}' (JP: '{effective_jp_keyword}')"
+                )
 
                 # Step 2: Concurrently Search Japanese, Chinese, and Taiwanese platforms simultaneously
-                jp_task = scrape_buyee_prices(parsed_item.search_query_ja)
-                tw_task = search_taiwanese_platforms(parsed_item.keyword_zh)
-                cn_task = search_chinese_platforms(parsed_item.keyword_zh)
+                jp_task = scrape_buyee_prices(effective_jp_keyword)
+                tw_task = search_taiwanese_platforms(effective_keyword)
+                cn_task = search_chinese_platforms(effective_keyword)
                 scraper_result, tw_result, cn_result = await asyncio.gather(jp_task, tw_task, cn_task)
-
-                # Step 2.5: Check if search yields poor / zero results
-                is_poor_results = (
-                    scraper_result.total_found == 0
-                    or not scraper_result.sample_prices
-                )
-                if is_poor_results:
-                    fallback_term = (
-                        suggested_term
-                        or (
-                            parsed_item.keyword_zh.strip()
-                            if parsed_item and parsed_item.keyword_zh and parsed_item.keyword_zh.lower() != (user_text or "").lower()
-                            else None
-                        )
-                    )
-                    if fallback_term:
-                        logger.info(f"💡 [Zero/Poor Results] Intercepting with Quick Reply for: '{fallback_term}'")
-                        quick_reply_button = QuickReplyItem(
-                            action=MessageAction(
-                                label=fallback_term[:20],
-                                text=fallback_term,
-                            )
-                        )
-                        reply_msg = TextSendMessage(
-                            text="💡 找不到精準結果嗎？您可能在尋找的商品是：",
-                            quick_reply=QuickReply(items=[quick_reply_button]),
-                        )
-                        await line_bot_api.reply_message(
-                            ReplyMessageRequest(
-                                reply_token=event.reply_token,
-                                messages=[reply_msg],
-                            )
-                        )
-                        continue
 
                 # Step 3: Compute Landed Cost & Markup Analysis
                 fb_price = (
@@ -516,7 +464,7 @@ async def handle_line_events(events: list, access_token: str) -> None:
                     fb_price_twd=fb_price,
                 )
 
-                # Step 4: Build LINE Flex Message UI with Affiliate Tracking
+                # Step 4: Build LINE Flex Message UI with Affiliate Tracking & Auto-Correction UX indicator
                 flex_dict = build_price_comparison_flex(
                     parsed_item=parsed_item,
                     pricing_result=pricing_result,
@@ -526,9 +474,10 @@ async def handle_line_events(events: list, access_token: str) -> None:
                     shopee_affiliate_base_url=settings.shopee_affiliate_base_url,
                     taobao_affiliate_base_url=settings.taobao_affiliate_base_url,
                     yahoo_tw_affiliate_base_url=settings.yahoo_tw_affiliate_base_url,
+                    perfected_keyword=effective_keyword,
                 )
                 flex_container = FlexContainer.from_dict(flex_dict)
-                alt_text = f"【比價分析】{parsed_item.franchise} {parsed_item.character}".strip()
+                alt_text = f"【比價分析】{effective_keyword}".strip()
 
                 reply_msg = FlexMessage(alt_text=alt_text, contents=flex_container)
                 await line_bot_api.reply_message(
@@ -545,44 +494,21 @@ async def handle_line_events(events: list, access_token: str) -> None:
 
             except (ScrapingTimeoutError, ScrapingBlockedError, ScrapingError, IrrelevantPostError) as exc:
                 logger.warning(f"Scraping/Parsing fallback ({type(exc).__name__}): {exc}")
-                active_suggestion = (
-                    parsed_item.suggested_term.strip()
-                    if parsed_item and parsed_item.suggested_term
-                    else None
+                fallback_kw = (
+                    (parsed_item.perfected_keyword or parsed_item.keyword_zh)
+                    if parsed_item and (parsed_item.perfected_keyword or parsed_item.keyword_zh)
+                    else (user_text[:30] if user_text else "熱門商品")
                 )
-                if active_suggestion:
-                    logger.info(f"💡 [Scraping Zero Results Fallback] Intercepting with Quick Reply suggestion: '{active_suggestion}'")
-                    quick_reply_button = QuickReplyItem(
-                        action=MessageAction(
-                            label=active_suggestion[:20],
-                            text=active_suggestion,
-                        )
-                    )
-                    reply_msg = TextSendMessage(
-                        text="💡 找不到精準結果嗎？您可能在尋找的商品是：",
-                        quick_reply=QuickReply(items=[quick_reply_button]),
-                    )
-                    await line_bot_api.reply_message(
-                        ReplyMessageRequest(
-                            reply_token=event.reply_token,
-                            messages=[reply_msg],
-                        )
-                    )
-                    continue
                 kw_jp = (
                     parsed_item.keyword_jp or parsed_item.search_query_ja
                     if parsed_item
                     else "人気商品"
                 )
-                kw_zh = (
-                    parsed_item.keyword_zh
-                    if parsed_item and parsed_item.keyword_zh
-                    else (user_text[:30] if user_text else "熱門商品")
-                )
+                kw_zh = fallback_kw
                 search_url = getattr(exc, "search_url", None) or f"https://buyee.jp/mercari/search?keyword={urllib.parse.quote(kw_jp)}"
                 item_title = (
-                    f"{parsed_item.franchise} {parsed_item.character}".strip()
-                    if parsed_item and (parsed_item.franchise or parsed_item.character)
+                    (parsed_item.perfected_keyword or f"{parsed_item.franchise} {parsed_item.character}").strip()
+                    if parsed_item and (parsed_item.perfected_keyword or parsed_item.franchise or parsed_item.character)
                     else kw_zh
                 )
 
@@ -596,6 +522,7 @@ async def handle_line_events(events: list, access_token: str) -> None:
                     shopee_affiliate_base_url=settings.shopee_affiliate_base_url,
                     taobao_affiliate_base_url=settings.taobao_affiliate_base_url,
                     yahoo_tw_affiliate_base_url=settings.yahoo_tw_affiliate_base_url,
+                    perfected_keyword=fallback_kw if parsed_item else None,
                 )
                 flex_container = FlexContainer.from_dict(keyword_flex_dict)
                 reply_msg = FlexSendMessage(

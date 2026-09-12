@@ -69,6 +69,10 @@ class ParsedItem(BaseModel):
         default="",
         description="Alias/backward-compatible field for keyword_jp.",
     )
+    perfected_keyword: Optional[str] = Field(
+        default=None,
+        description="The optimal, fully corrected standard product search string produced by automatic autocorrection (e.g., converting 'switch' to 'Nintendo Switch', fixing typos, casing, or incomplete names).",
+    )
     suggested_term: Optional[str] = Field(
         default=None,
         description="The optimal, fully qualified standard product name (e.g., 'Apple iPhone 15' instead of 'iphone') if the user's input is a typo, overly broad, or missing a brand name; null if input is already specific, accurate, and standard.",
@@ -101,6 +105,13 @@ class ParsedItem(BaseModel):
             self.keyword_zh = f"{self.franchise} {self.character}".strip() or self.keyword_jp or self.search_query_ja
         if not self.zh_keyword and self.keyword_zh:
             self.zh_keyword = self.keyword_zh
+
+        # Synchronize perfected_keyword and suggested_term
+        if not self.perfected_keyword:
+            if self.suggested_term:
+                self.perfected_keyword = self.suggested_term
+            else:
+                self.perfected_keyword = self.keyword_zh or f"{self.franchise} {self.character}".strip()
         return self
 
 
@@ -383,9 +394,11 @@ Your primary objective is to act as a precision translator and query perfecter f
 5. **Relevance Flag (`is_anime_merch` / is_valid_goods)**:
    - Always set `is_anime_merch: true` so a search comparison card is always produced for user browsing.
 
-6. **Suggested Term for Clarification and Dynamic Suggestions (`suggested_term`)**:
-   - If the user's search query is a typo, overly broad, or missing a brand name (e.g., user inputs "iphone" instead of "Apple iPhone 15", "switch" instead of "Nintendo Switch OLED", "airpods" instead of "Apple AirPods Pro 2"), you MUST output the optimal, fully qualified standard product name in the `suggested_term` field (e.g. "Apple iPhone 15").
-   - If the user's input is already a specific, fully qualified, standard product name (e.g., "Apple iPhone 15", "Sony WH-1000XM5", "Nintendo Switch 2"), set `suggested_term` to null.
+6. **Automatic Autocorrect Engine (`perfected_keyword`)**:
+   - You MUST act as an automatic autocorrect engine for e-commerce search queries.
+   - In the `perfected_keyword` field, output the optimal, fully corrected, and completed standard search string.
+   - You MUST correct any typos, casing issues, abbreviations, or incomplete names (e.g., converting "switch" to "Nintendo Switch", "iphone" to "Apple iPhone 15", "airpods" to "Apple AirPods Pro 2", "ps5" to "PlayStation 5", "re0" to "Re:從零開始的異世界生活", "88d pro" to "Yonex ASTROX 88D PRO").
+   - Always provide this perfected, standard product name in `perfected_keyword`.
 """.strip()
 
 
@@ -415,7 +428,8 @@ def fast_regex_parse(text: str) -> Optional[ParsedItem]:
                 search_query_ja=custom_v,
                 fb_price_twd=None,
                 is_anime_merch=True,
-                suggested_term=None,
+                perfected_keyword=clean,
+                suggested_term=clean,
             )
 
     # 2. Skip fast-path if text contains trading verbs, conditions, or conversational tokens
@@ -428,7 +442,7 @@ def fast_regex_parse(text: str) -> Optional[ParsedItem]:
         return None
 
     # 4. Only bypass LLM for Latin/ASCII brand & model identifiers that contain digits or multiple words (e.g. 'Switch 2', 'PS5', 'Sony WH-1000XM5')
-    # Single-word generic terms without digits (e.g. 'iphone', 'shoes', 'camera') must go to Gemini for entity completion and suggested_term.
+    # Single-word generic terms without digits (e.g. 'switch', 'iphone', 'shoes', 'camera') must go to Gemini for entity completion and perfected_keyword.
     is_pure_latin_ascii = bool(re.match(r"^[A-Za-z0-9\s\-+._]+$", clean))
     if is_pure_latin_ascii:
         has_digits_or_multiple_tokens = bool(re.search(r"\d", clean) or " " in clean)
@@ -444,7 +458,8 @@ def fast_regex_parse(text: str) -> Optional[ParsedItem]:
                     search_query_ja=norm_kw,
                     fb_price_twd=None,
                     is_anime_merch=True,
-                    suggested_term=None,
+                    perfected_keyword=norm_kw,
+                    suggested_term=norm_kw,
                 )
 
     return None

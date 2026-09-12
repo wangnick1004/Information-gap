@@ -219,6 +219,7 @@ def build_keyword_flex_message(
     taobao_affiliate_base_url: Optional[str] = None,
     yahoo_tw_affiliate_base_url: Optional[str] = None,
     image_url: Optional[str] = None,
+    perfected_keyword: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Construct a LINE Flex Carousel containing 2 cards:
@@ -256,6 +257,7 @@ def build_keyword_flex_message(
     )
 
     hero_img = image_url or DEFAULT_PLACEHOLDER_IMAGE
+    correction_text = perfected_keyword.strip() if perfected_keyword and perfected_keyword.strip() else None
 
     # Card 1: Japan Focus
     card_japan: Dict[str, Any] = {
@@ -273,7 +275,22 @@ def build_keyword_flex_message(
                     "weight": "bold",
                     "size": "sm",
                     "color": "#16A34A",
-                }
+                },
+                *(
+                    [
+                        {
+                            "type": "text",
+                            "text": f"🔎 已自動為您精準鎖定：{correction_text}",
+                            "size": "xs",
+                            "color": "#15803D",
+                            "weight": "bold",
+                            "wrap": True,
+                            "margin": "xs",
+                        }
+                    ]
+                    if correction_text
+                    else []
+                ),
             ],
         },
         "body": {
@@ -371,7 +388,22 @@ def build_keyword_flex_message(
                     "weight": "bold",
                     "size": "sm",
                     "color": "#EA580C",
-                }
+                },
+                *(
+                    [
+                        {
+                            "type": "text",
+                            "text": f"🔎 已自動為您精準鎖定：{correction_text}",
+                            "size": "xs",
+                            "color": "#EA580C",
+                            "weight": "bold",
+                            "wrap": True,
+                            "margin": "xs",
+                        }
+                    ]
+                    if correction_text
+                    else []
+                ),
             ],
         },
         "body": {
@@ -478,6 +510,7 @@ def build_price_comparison_flex(
     shopee_affiliate_base_url: Optional[str] = None,
     taobao_affiliate_base_url: Optional[str] = None,
     yahoo_tw_affiliate_base_url: Optional[str] = None,
+    perfected_keyword: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Construct a rich LINE Flex Carousel comparing FB and cross-border market prices across:
@@ -486,6 +519,14 @@ def build_price_comparison_flex(
     """
     image_url = scraper_result.representative_image_url or DEFAULT_PLACEHOLDER_IMAGE
     final_buyee_url = append_affiliate_id(scraper_result.search_url, affiliate_id=affiliate_id, affiliate_base_url=affiliate_base_url)
+
+    correction_text = (
+        perfected_keyword
+        or (getattr(parsed_item, "perfected_keyword", None) if parsed_item else None)
+        or (getattr(parsed_item, "suggested_term", None) if parsed_item else None)
+    )
+    if correction_text:
+        correction_text = correction_text.strip()
 
     jp_kw = parsed_item.keyword_jp or parsed_item.search_query_ja or f"{parsed_item.franchise} {parsed_item.character}".strip()
     clean_jp_kw = normalize_search_keyword(jp_kw) or "商品搜尋"
@@ -566,7 +607,22 @@ def build_price_comparison_flex(
                     "weight": "bold",
                     "size": "sm",
                     "color": "#16A34A",
-                }
+                },
+                *(
+                    [
+                        {
+                            "type": "text",
+                            "text": f"🔎 已自動為您精準鎖定：{correction_text}",
+                            "size": "xs",
+                            "color": "#15803D",
+                            "weight": "bold",
+                            "wrap": True,
+                            "margin": "xs",
+                        }
+                    ]
+                    if correction_text
+                    else []
+                ),
             ],
         },
         "body": {
@@ -781,7 +837,22 @@ def build_price_comparison_flex(
                     "weight": "bold",
                     "size": "sm",
                     "color": "#EA580C",
-                }
+                },
+                *(
+                    [
+                        {
+                            "type": "text",
+                            "text": f"🔎 已自動為您精準鎖定：{correction_text}",
+                            "size": "xs",
+                            "color": "#EA580C",
+                            "weight": "bold",
+                            "wrap": True,
+                            "margin": "xs",
+                        }
+                    ]
+                    if correction_text
+                    else []
+                ),
             ],
         },
         "body": {
