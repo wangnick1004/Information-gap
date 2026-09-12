@@ -555,3 +555,250 @@ def test_webhook_rate_limit_interception(mock_messaging_api_class, mock_api_clie
         assert res_guide.status_code == 200
         guide_call_args = mock_api.reply_message.call_args[0][0]
         assert "📖 【新手指南】" in guide_call_args.messages[0].text
+
+
+@patch("main.AsyncApiClient")
+@patch("main.AsyncMessagingApi")
+@patch("main.parse_fb_post")
+def test_webhook_string_normalization_and_quick_reply_on_llm_suggestion(
+    mock_parse_fb_post, mock_messaging_api_class, mock_api_client_class
+):
+    """Test that incoming message is normalized with .strip().lower() and LLM suggestion intercepts with Quick Reply."""
+    from linebot.v3.messaging import TextMessage
+    from services.parser import ParsedItem
+
+    mock_api = AsyncMock()
+    mock_messaging_api_class.return_value = mock_api
+
+    # LLM recommends standard term 'Apple iPhone 15' for broad query 'iphone'
+    mock_parse_fb_post.return_value = ParsedItem(
+        franchise="Apple",
+        character="iPhone 15",
+        item_type="智慧型手機",
+        keyword_jp="iPhone 15",
+        keyword_zh="iPhone 15",
+        search_query_ja="iPhone 15",
+        suggested_term="Apple iPhone 15",
+        fb_price_twd=None,
+        is_anime_merch=True,
+    )
+
+    secret = "test_secret_123"
+    token = "test_token_456"
+
+    # Input has leading/trailing spaces and uppercase characters
+    payload = {
+        "destination": "U1234567890",
+        "events": [
+            {
+                "type": "message",
+                "message": {
+                    "type": "text",
+                    "id": "100010",
+                    "text": "   IPHONE   ",
+                    "quoteToken": "quote123",
+                },
+                "timestamp": 1625641600000,
+                "source": {"type": "user", "userId": "U_quick_reply_user"},
+                "replyToken": "token_qr_123",
+                "mode": "active",
+                "webhookEventId": "01FZ74A0TDDPYRVKNK77XKC3ZR",
+                "deliveryContext": {"isRedelivery": False},
+            }
+        ],
+    }
+    body_str = json.dumps(payload)
+    signature = generate_signature(secret, body_str)
+
+    with patch.object(settings, "line_channel_secret", secret), \
+         patch.object(settings, "line_channel_access_token", token):
+
+        response = client.post(
+            "/api/webhook",
+            content=body_str,
+            headers={"Content-Type": "application/json", "X-Line-Signature": signature},
+        )
+        assert response.status_code == 200
+
+    # Verify that parse_fb_post received the normalized string 'iphone'
+    mock_parse_fb_post.assert_awaited_once()
+    called_post_text = mock_parse_fb_post.call_args[1].get("post_text") or mock_parse_fb_post.call_args[0][0]
+    assert called_post_text == "iphone"
+
+    # Verify that reply_message was called with TextSendMessage containing QuickReply
+    mock_api.reply_message.assert_awaited_once()
+    reply_req = mock_api.reply_message.call_args[0][0]
+    assert len(reply_req.messages) == 1
+
+    msg = reply_req.messages[0]
+    assert isinstance(msg, TextMessage)
+    assert msg.text == "💡 找不到精準結果嗎？您可能在尋找的商品是："
+    assert msg.quick_reply is not None
+    assert len(msg.quick_reply.items) == 1
+
+    qr_item = msg.quick_reply.items[0]
+    assert qr_item.action.type == "message"
+    assert qr_item.action.text == "Apple iPhone 15"
+    assert qr_item.action.label == "Apple iPhone 15"
+
+
+@patch("main.AsyncApiClient")
+@patch("main.AsyncMessagingApi")
+@patch("main.scrape_buyee_prices")
+@patch("main.parse_fb_post")
+def test_webhook_quick_reply_on_poor_or_zero_results(
+    mock_parse_fb_post, mock_scrape_buyee_prices, mock_messaging_api_class, mock_api_client_class
+):
+    """Test that when search yields zero/poor results, normal Flex Message is intercepted with Quick Reply."""
+    from linebot.v3.messaging import TextMessage
+    from services.parser import ParsedItem
+    from services.scraper import ScrapingResult
+
+    mock_api = AsyncMock()
+    mock_messaging_api_class.return_value = mock_api
+
+    mock_parse_fb_post.return_value = ParsedItem(
+        franchise="Sony",
+        character="WH-1000XM5",
+        item_type="ヘッドホン",
+        search_query_ja="Sony WH-1000XM5",
+        suggested_term="Sony WH-1000XM5",
+        fb_price_twd=None,
+        is_anime_merch=True,
+    )
+
+    # Scraper returns zero results
+    mock_scrape_buyee_prices.return_value = ScrapingResult(
+        query="Sony WH-1000XM5",
+        search_url="https://buyee.jp/mercari/search?keyword=test",
+        lowest_price_jpy=0.0,
+        median_price_jpy=0.0,
+        representative_image_url=None,
+        sample_prices=[],
+        total_found=0,
+    )
+
+    secret = "test_secret_123"
+    token = "test_token_456"
+
+    payload = {
+        "destination": "U1234567890",
+        "events": [
+            {
+                "type": "message",
+                "message": {
+                    "type": "text",
+                    "id": "100011",
+                    "text": "sony wh-1000xm5",
+                    "quoteToken": "quote123",
+                },
+                "timestamp": 1625641600000,
+                "source": {"type": "user", "userId": "U_zero_res_user"},
+                "replyToken": "token_zero_123",
+                "mode": "active",
+                "webhookEventId": "01FZ74A0TDDPYRVKNK77XKC3ZR",
+                "deliveryContext": {"isRedelivery": False},
+            }
+        ],
+    }
+    body_str = json.dumps(payload)
+    signature = generate_signature(secret, body_str)
+
+    with patch.object(settings, "line_channel_secret", secret), \
+         patch.object(settings, "line_channel_access_token", token):
+
+        response = client.post(
+            "/api/webhook",
+            content=body_str,
+            headers={"Content-Type": "application/json", "X-Line-Signature": signature},
+        )
+        assert response.status_code == 200
+
+    mock_api.reply_message.assert_awaited_once()
+    reply_req = mock_api.reply_message.call_args[0][0]
+    msg = reply_req.messages[0]
+    assert isinstance(msg, TextMessage)
+    assert msg.text == "💡 找不到精準結果嗎？您可能在尋找的商品是："
+    assert msg.quick_reply is not None
+    assert msg.quick_reply.items[0].action.text == "Sony WH-1000XM5"
+
+
+@patch("main.AsyncApiClient")
+@patch("main.AsyncMessagingApi")
+@patch("main.scrape_buyee_prices")
+@patch("main.parse_fb_post")
+def test_webhook_normal_flex_when_no_suggestion(
+    mock_parse_fb_post, mock_scrape_buyee_prices, mock_messaging_api_class, mock_api_client_class
+):
+    """Test that when input is accurate and specific (no suggested_term), normal Flex Message is returned."""
+    from linebot.v3.messaging import FlexMessage
+    from services.parser import ParsedItem
+    from services.scraper import ScrapingResult
+
+    mock_api = AsyncMock()
+    mock_messaging_api_class.return_value = mock_api
+
+    # Specific input has suggested_term=None
+    mock_parse_fb_post.return_value = ParsedItem(
+        franchise="Apple",
+        character="iPhone 15",
+        item_type="智慧型手機",
+        keyword_jp="Apple iPhone 15",
+        keyword_zh="Apple iPhone 15",
+        search_query_ja="Apple iPhone 15",
+        suggested_term=None,
+        fb_price_twd=25000,
+        is_anime_merch=True,
+    )
+
+    mock_scrape_buyee_prices.return_value = ScrapingResult(
+        query="Apple iPhone 15",
+        search_url="https://buyee.jp/mercari/search?keyword=iphone15",
+        lowest_price_jpy=95000.0,
+        median_price_jpy=100000.0,
+        representative_image_url="https://example.com/iphone15.jpg",
+        sample_prices=[95000.0, 100000.0, 105000.0],
+        total_found=3,
+    )
+
+    secret = "test_secret_123"
+    token = "test_token_456"
+
+    payload = {
+        "destination": "U1234567890",
+        "events": [
+            {
+                "type": "message",
+                "message": {
+                    "type": "text",
+                    "id": "100012",
+                    "text": "Apple iPhone 15",
+                    "quoteToken": "quote123",
+                },
+                "timestamp": 1625641600000,
+                "source": {"type": "user", "userId": "U_normal_user"},
+                "replyToken": "token_normal_123",
+                "mode": "active",
+                "webhookEventId": "01FZ74A0TDDPYRVKNK77XKC3ZR",
+                "deliveryContext": {"isRedelivery": False},
+            }
+        ],
+    }
+    body_str = json.dumps(payload)
+    signature = generate_signature(secret, body_str)
+
+    with patch.object(settings, "line_channel_secret", secret), \
+         patch.object(settings, "line_channel_access_token", token):
+
+        response = client.post(
+            "/api/webhook",
+            content=body_str,
+            headers={"Content-Type": "application/json", "X-Line-Signature": signature},
+        )
+        assert response.status_code == 200
+
+    mock_api.reply_message.assert_awaited_once()
+    reply_req = mock_api.reply_message.call_args[0][0]
+    assert len(reply_req.messages) == 1
+    assert isinstance(reply_req.messages[0], FlexMessage)
+

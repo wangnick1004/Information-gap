@@ -788,3 +788,46 @@ async def test_chinese_queries_must_translate_to_native_japanese():
         assert result.keyword_zh == "藍色監獄"
         assert result.search_query_ja == "ブルーロック"
 
+
+def test_parsed_item_suggested_term_schema():
+    """Test that ParsedItem schema supports suggested_term field."""
+    from services.parser import ParsedItem
+
+    # Default is None
+    item_default = ParsedItem(
+        franchise="Apple",
+        character="iPhone 15",
+    )
+    assert item_default.suggested_term is None
+
+    # Explicit suggested_term
+    item_with_suggestion = ParsedItem(
+        franchise="Apple",
+        character="iPhone 15",
+        suggested_term="Apple iPhone 15",
+    )
+    assert item_with_suggestion.suggested_term == "Apple iPhone 15"
+    data = item_with_suggestion.model_dump()
+    assert data["suggested_term"] == "Apple iPhone 15"
+
+
+def test_fast_regex_parse_generic_terms_do_not_bypass():
+    """Test that generic single-word terms without digits do not bypass LLM, ensuring suggested_term is generated."""
+    from services.parser import fast_regex_parse
+
+    # Single-word generic/broad terms should NOT bypass
+    assert fast_regex_parse("iphone") is None
+    assert fast_regex_parse("  IPHONE  ") is None
+    assert fast_regex_parse("camera") is None
+    assert fast_regex_parse("shoes") is None
+
+    # Model identifiers with digits or multiple tokens still bypass
+    res_switch = fast_regex_parse("Switch 2")
+    assert res_switch is not None
+    assert res_switch.search_query_ja == "SWITCH 2"
+
+    res_ps5 = fast_regex_parse("PS5")
+    assert res_ps5 is not None
+    assert res_ps5.search_query_ja == "PS5"
+
+

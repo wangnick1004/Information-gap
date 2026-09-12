@@ -5,6 +5,10 @@ Provides entrypoint and re-exports app, GEMINI_VISION_PROMPT, and handlers.
 
 from main import (  # noqa: F401
     GEMINI_VISION_PROMPT,
+    MessageAction,
+    QuickReply,
+    QuickReplyItem,
+    TextSendMessage,
     app,
     handler,
     line_bot_api,

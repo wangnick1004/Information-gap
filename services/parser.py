@@ -69,6 +69,10 @@ class ParsedItem(BaseModel):
         default="",
         description="Alias/backward-compatible field for keyword_jp.",
     )
+    suggested_term: Optional[str] = Field(
+        default=None,
+        description="The optimal, fully qualified standard product name (e.g., 'Apple iPhone 15' instead of 'iphone') if the user's input is a typo, overly broad, or missing a brand name; null if input is already specific, accurate, and standard.",
+    )
     fb_price_twd: Optional[int] = Field(
         default=None,
         description="The extracted selling price in TWD (integer) from the Facebook post, or null if not found.",
@@ -378,6 +382,10 @@ Your primary objective is to act as a precision translator and query perfecter f
 
 5. **Relevance Flag (`is_anime_merch` / is_valid_goods)**:
    - Always set `is_anime_merch: true` so a search comparison card is always produced for user browsing.
+
+6. **Suggested Term for Clarification and Dynamic Suggestions (`suggested_term`)**:
+   - If the user's search query is a typo, overly broad, or missing a brand name (e.g., user inputs "iphone" instead of "Apple iPhone 15", "switch" instead of "Nintendo Switch OLED", "airpods" instead of "Apple AirPods Pro 2"), you MUST output the optimal, fully qualified standard product name in the `suggested_term` field (e.g. "Apple iPhone 15").
+   - If the user's input is already a specific, fully qualified, standard product name (e.g., "Apple iPhone 15", "Sony WH-1000XM5", "Nintendo Switch 2"), set `suggested_term` to null.
 """.strip()
 
 
@@ -391,14 +399,13 @@ def fast_regex_parse(text: str) -> Optional[ParsedItem]:
     if not text:
         return None
 
-    clean = text.strip()
+    clean = text.strip().lower()
     if not clean or len(clean) > 40:
         return None
 
     # 1. Check Custom Colloquialism & Shorthand Dictionary match first (case-insensitive)
-    clean_lower = clean.lower()
     for custom_k, custom_v in CUSTOM_KEYWORDS.items():
-        if clean_lower == custom_k.lower():
+        if clean == custom_k.lower():
             return ParsedItem(
                 franchise=custom_v,
                 character="",
@@ -408,6 +415,7 @@ def fast_regex_parse(text: str) -> Optional[ParsedItem]:
                 search_query_ja=custom_v,
                 fb_price_twd=None,
                 is_anime_merch=True,
+                suggested_term=None,
             )
 
     # 2. Skip fast-path if text contains trading verbs, conditions, or conversational tokens
@@ -419,22 +427,25 @@ def fast_regex_parse(text: str) -> Optional[ParsedItem]:
     if re.search(r"[,，。！？!?\n\r:：【】\[\]()（）/／]", clean):
         return None
 
-    # 4. Only bypass LLM for pure Latin/ASCII/numeric brand & model identifiers (e.g. 'Switch 2', 'PS5', 'Sony WH-1000XM5')
-    # If the text contains Chinese/Kanji/non-ASCII characters and was not in CUSTOM_KEYWORDS, it MUST go to Gemini for Japanese translation.
+    # 4. Only bypass LLM for Latin/ASCII brand & model identifiers that contain digits or multiple words (e.g. 'Switch 2', 'PS5', 'Sony WH-1000XM5')
+    # Single-word generic terms without digits (e.g. 'iphone', 'shoes', 'camera') must go to Gemini for entity completion and suggested_term.
     is_pure_latin_ascii = bool(re.match(r"^[A-Za-z0-9\s\-+._]+$", clean))
     if is_pure_latin_ascii:
-        norm_kw = normalize_search_keyword(clean)
-        if len(norm_kw) >= 2:
-            return ParsedItem(
-                franchise=norm_kw,
-                character="",
-                item_type="商品",
-                keyword_jp=norm_kw,
-                keyword_zh=norm_kw,
-                search_query_ja=norm_kw,
-                fb_price_twd=None,
-                is_anime_merch=True,
-            )
+        has_digits_or_multiple_tokens = bool(re.search(r"\d", clean) or " " in clean)
+        if has_digits_or_multiple_tokens:
+            norm_kw = normalize_search_keyword(clean)
+            if len(norm_kw) >= 2:
+                return ParsedItem(
+                    franchise=norm_kw,
+                    character="",
+                    item_type="商品",
+                    keyword_jp=norm_kw,
+                    keyword_zh=norm_kw,
+                    search_query_ja=norm_kw,
+                    fb_price_twd=None,
+                    is_anime_merch=True,
+                    suggested_term=None,
+                )
 
     return None
 
@@ -452,26 +463,8 @@ async def parse_fb_post(
     Extract structured retail item entities from text or images.
     Attempts ultra-fast Regex parsing first to bypass LLM latency (< 0.1ms).
     Falls back to Gemini Flash multimodal extraction for complex/multimodal posts.
-
-    Args:
-        post_text: Optional text or caption from user/post.
-        image_data: Optional raw bytes or PIL Image object of the product image.
-        mime_type: MIME type of the image if bytes (default "image/jpeg").
-        api_key: Optional Gemini API key (defaults to settings/environment).
-        max_retries: Maximum number of retry attempts for transient errors (default 3).
-        retry_delay_seconds: Initial retry delay for exponential backoff (default 2.0s).
-        vision_prompt: Optional custom prompt for the vision model (defaults to DEFAULT_VISION_PROMPT).
-
-    Returns:
-        ParsedItem: Structured entity extraction result.
-
-    Raises:
-        IrrelevantPostError: When the input lacks recognizable product details or is empty.
-        GeminiServerError: When 503 UNAVAILABLE / server overload persists after retries.
-        GeminiRateLimitError: When rate limit (429) persists after all retries.
-        GeminiAPIError: When API key is missing or non-retryable Gemini API call fails.
     """
-    cleaned_text = post_text.strip() if post_text else ""
+    cleaned_text = post_text.strip().lower() if post_text else ""
     if not cleaned_text and image_data is None:
         raise IrrelevantPostError("Post text and image data are both empty.")
 
