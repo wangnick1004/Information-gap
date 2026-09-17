@@ -173,7 +173,7 @@ def construct_platform_search_url(platform: str, query: str) -> str:
 async def fetch_lightweight_platform_min_price(
     platform: str,
     query: str,
-    timeout_seconds: float = 2.0,
+    timeout_seconds: float = 8.0,
     min_valid_jpy: float = 300.0,
     exchange_rate: Optional[float] = None,
     overseas_fee_rate: float = 0.015,
@@ -187,13 +187,13 @@ async def fetch_lightweight_platform_min_price(
     2. Parses HTML/JSON to extract the prices of the first 3-5 items on the first page.
     3. Filters out extreme low values (under 300 JPY by default) and finds the minimum valid price.
     4. Converts this JPY price to TWD (incorporating 1.5% overseas transaction fee).
-    5. Wraps fetching in a try-except block with a strict 2-second timeout; on timeout or failure,
+    5. Wraps fetching in a try-except block with network timeout; on timeout or failure,
        gracefully defaults to None.
 
     Args:
         platform: Platform identifier ('mercari' or 'rakuten').
         query: Japanese search query.
-        timeout_seconds: Strict timeout threshold in seconds (default: 2.0s).
+        timeout_seconds: Timeout threshold in seconds (default: 8.0s).
         min_valid_jpy: Threshold to filter out fake items/empty boxes (default: 300.0 JPY).
         exchange_rate: Optional custom JPY/TWD exchange rate.
         overseas_fee_rate: Fixed overseas transaction fee rate (default: 0.015 = 1.5%).
@@ -222,9 +222,9 @@ async def fetch_lightweight_platform_min_price(
         search_url = construct_platform_search_url(platform, clean_query)
         headers = dict(DEFAULT_HEADERS)
 
-        # Enforce strict 2-second timeout (max allowed: timeout_seconds)
-        effective_timeout = min(timeout_seconds, 2.0)
-        client_timeout = aiohttp.ClientTimeout(total=effective_timeout, connect=min(effective_timeout, 1.2))
+        # Enforce configurable timeout threshold
+        effective_timeout = timeout_seconds
+        client_timeout = aiohttp.ClientTimeout(total=effective_timeout, connect=min(effective_timeout, 3.0))
 
         # Perform network fetch
         if client is not None:
@@ -281,7 +281,7 @@ async def fetch_lightweight_platform_min_price(
 
 async def fetch_mercari_min_price(
     query: str,
-    timeout_seconds: float = 2.0,
+    timeout_seconds: float = 8.0,
     min_valid_jpy: float = 300.0,
     exchange_rate: Optional[float] = None,
     overseas_fee_rate: float = 0.015,
@@ -303,7 +303,7 @@ async def fetch_mercari_min_price(
 
 async def fetch_rakuten_min_price(
     query: str,
-    timeout_seconds: float = 2.0,
+    timeout_seconds: float = 8.0,
     min_valid_jpy: float = 300.0,
     exchange_rate: Optional[float] = None,
     overseas_fee_rate: float = 0.015,
@@ -326,7 +326,7 @@ async def fetch_rakuten_min_price(
 async def fetch_lightweight_prices(
     query: str,
     platforms: Optional[List[str]] = None,
-    timeout_seconds: float = 2.0,
+    timeout_seconds: float = 8.0,
     min_valid_jpy: float = 300.0,
     exchange_rate: Optional[float] = None,
     overseas_fee_rate: float = 0.015,

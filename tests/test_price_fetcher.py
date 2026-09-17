@@ -109,10 +109,12 @@ async def test_data_parsing_filters_under_2500_and_finds_minimum():
 
 
 @pytest.mark.anyio
-async def test_data_parsing_all_under_2500_returns_none():
+async def test_data_parsing_all_under_2500_returns_none(caplog):
     """
-    Test that if all extracted items are under 2500 JPY, it returns None.
+    Test that if all extracted items are under 2500 JPY, it returns None
+    and logs total items, raw prices, and the filter empty warning.
     """
+    import logging
     mock_client = AsyncMock()
     mock_resp = MagicMock()
     mock_resp.status_code = 200
@@ -126,9 +128,14 @@ async def test_data_parsing_all_under_2500_returns_none():
     })
     mock_client.get = AsyncMock(return_value=mock_resp)
 
-    with patch.dict(os.environ, {"RAPIDAPI_KEY": "test_env_key"}):
-        price = await fetch_mercari_api_price("ビスカリア", client=mock_client)
-        assert price is None
+    with caplog.at_level(logging.INFO):
+        with patch.dict(os.environ, {"RAPIDAPI_KEY": "test_env_key"}):
+            price = await fetch_mercari_api_price("ビスカリア", client=mock_client)
+            assert price is None
+
+    assert "📊 [Mercari Listings] Total items fetched: 4" in caplog.text
+    assert "💰 [Mercari Raw Prices] Extracted prices before filter: [500.0, 1200.0, 800.0, 2499.0]" in caplog.text
+    assert "⚠️ [Filter Empty] All Mercari items were < 2500 JPY and filtered out." in caplog.text
 
 
 @pytest.mark.anyio

@@ -443,6 +443,8 @@ async def handle_line_events(events: list, access_token: str) -> None:
                     continue
 
             parsed_item: Optional[ParsedItem] = None
+            rakuten_price: Optional[int] = None
+            mercari_api_price: Optional[int] = None
 
             try:
                 # Step 1: Multimodal Entity Extraction & Japanese/Chinese Search Query Generation
@@ -472,11 +474,25 @@ async def handle_line_events(events: list, access_token: str) -> None:
                 jp_task = scrape_buyee_prices(effective_jp_keyword, max_items=15)
                 tw_task = search_taiwanese_platforms(effective_keyword)
                 cn_task = search_chinese_platforms(effective_keyword)
-                rakuten_task = fetch_rakuten_min_price(effective_jp_keyword, timeout_seconds=2.0)
+                rakuten_task = fetch_rakuten_min_price(effective_jp_keyword, timeout_seconds=8.0)
                 mercari_task = fetch_mercari_api_price(effective_jp_keyword, timeout_seconds=8.0, enable_mock=False)
-                scraper_result, tw_result, cn_result, rakuten_price, mercari_api_price = await asyncio.gather(
-                    jp_task, tw_task, cn_task, rakuten_task, mercari_task
+                results = await asyncio.gather(
+                    jp_task, tw_task, cn_task, rakuten_task, mercari_task,
+                    return_exceptions=True,
                 )
+                scraper_result, tw_result, cn_result, r_price, m_price = results
+                rakuten_price = r_price if (isinstance(r_price, int) and r_price > 0) else None
+                mercari_api_price = m_price if (isinstance(m_price, int) and m_price > 0) else None
+                if isinstance(tw_result, Exception):
+                    logger.warning(f"TW search failed: {tw_result}")
+                    tw_result = None
+                if isinstance(cn_result, Exception):
+                    logger.warning(f"CN search failed: {cn_result}")
+                    cn_result = None
+
+                # If Buyee scraper raised an exception, route to fallback while preserving already fetched prices
+                if isinstance(scraper_result, Exception):
+                    raise scraper_result
 
                 # Step 3: Compute Landed Cost & Markup Analysis
                 fb_price = (
@@ -569,22 +585,31 @@ async def handle_line_events(events: list, access_token: str) -> None:
                     else kw_zh
                 )
 
-                # Attempt fast lightweight fetch if applicable
-                rakuten_fallback_price = None
-                mercari_fallback_price = None
-                try:
-                    rakuten_fallback_price, mercari_fallback_price = await asyncio.gather(
-                        fetch_rakuten_min_price(kw_jp, timeout_seconds=2.0),
-                        fetch_mercari_api_price(kw_jp, timeout_seconds=8.0, enable_mock=False),
-                        return_exceptions=True,
-                    )
-                    if isinstance(rakuten_fallback_price, Exception):
-                        rakuten_fallback_price = None
-                    if isinstance(mercari_fallback_price, Exception):
-                        mercari_fallback_price = None
-                except Exception:
-                    rakuten_fallback_price = None
-                    mercari_fallback_price = None
+                # Attempt fast lightweight fetch if applicable (reuse successful prices from Step 2 if present)
+                rakuten_fallback_price = rakuten_price if (isinstance(rakuten_price, int) and rakuten_price > 0) else None
+                mercari_fallback_price = mercari_api_price if (isinstance(mercari_api_price, int) and mercari_api_price > 0) else None
+
+                # Only attempt network fetch if not already retrieved in Step 2
+                if rakuten_fallback_price is None or mercari_fallback_price is None:
+                    try:
+                        need_rakuten = rakuten_fallback_price is None
+                        need_mercari = mercari_fallback_price is None
+                        if need_rakuten and need_mercari:
+                            r_fb, m_fb = await asyncio.gather(
+                                fetch_rakuten_min_price(kw_jp, timeout_seconds=8.0),
+                                fetch_mercari_api_price(kw_jp, timeout_seconds=8.0, enable_mock=False),
+                                return_exceptions=True,
+                            )
+                            rakuten_fallback_price = r_fb if (isinstance(r_fb, int) and r_fb > 0) else None
+                            mercari_fallback_price = m_fb if (isinstance(m_fb, int) and m_fb > 0) else None
+                        elif need_rakuten:
+                            r_fb = await fetch_rakuten_min_price(kw_jp, timeout_seconds=8.0)
+                            rakuten_fallback_price = r_fb if (isinstance(r_fb, int) and r_fb > 0) else None
+                        elif need_mercari:
+                            m_fb = await fetch_mercari_api_price(kw_jp, timeout_seconds=8.0, enable_mock=False)
+                            mercari_fallback_price = m_fb if (isinstance(m_fb, int) and m_fb > 0) else None
+                    except Exception:
+                        pass
 
                 keyword_flex_dict = build_keyword_flex_message(
                     japanese_keyword=kw_jp,
@@ -736,7 +761,7 @@ async def fetch_and_generate_flex_message(
     keyword_ja: str,
     keyword_zh: Optional[str] = None,
     platform: str = "mercari",
-    timeout_seconds: float = 2.0,
+    timeout_seconds: float = 8.0,
     min_valid_jpy: float = 300.0,
     search_url: Optional[str] = None,
     affiliate_id: Optional[str] = None,

@@ -248,3 +248,82 @@ async def test_fetch_and_generate_flex_message_replaces_fallback():
         buttons_fallback = [c for c in card1_fallback["footer"]["contents"] if c.get("type") == "button"]
         assert buttons_fallback[0]["action"]["label"] == "Mercari (點擊查看)"
         assert buttons_fallback[0]["text"] == "Mercari (點擊查看)"
+
+
+@pytest.mark.anyio
+async def test_rakuten_price_retained_on_scraper_failure():
+    """
+    Test Rakuten control flow fix:
+    When Step 2 concurrently gathers tasks, if Buyee scraper times out/fails,
+    the successfully fetched Rakuten price is retained and passed to the fallback
+    without triggering a redundant failing re-fetch.
+    """
+    from services.scraper import ScrapingTimeoutError
+    from services.parser import ParsedItem
+    from linebot.v3.webhook import Event
+    from unittest.mock import MagicMock, AsyncMock, patch
+    import main
+
+    event = Event.from_dict({
+        "type": "message",
+        "message": {
+            "type": "text",
+            "id": "100001",
+            "text": "Viscaria",
+            "quoteToken": "quote123",
+        },
+        "timestamp": 1625641600000,
+        "source": {"type": "user", "userId": "Uuser123"},
+        "replyToken": "test_reply_token_rakuten",
+        "mode": "active",
+        "webhookEventId": "01FZ74A0TDDPYRVKNK77XKC3ZR",
+        "deliveryContext": {"isRedelivery": False},
+    })
+
+    parsed_item = ParsedItem(
+        franchise="Butterfly",
+        character="Viscaria",
+        item_type="Racket",
+        keyword_zh="蝴蝶王 Viscaria",
+        keyword_jp="ビスカリア",
+        search_query_ja="ビスカリア",
+        perfected_keyword="Butterfly Viscaria",
+        is_acg_or_toy=True,
+    )
+
+    with patch("main.parse_fb_post", new_callable=AsyncMock) as mock_parse, \
+         patch("main.scrape_buyee_prices", new_callable=AsyncMock) as mock_buyee, \
+         patch("main.search_taiwanese_platforms", new_callable=AsyncMock) as mock_tw, \
+         patch("main.search_chinese_platforms", new_callable=AsyncMock) as mock_cn, \
+         patch("main.fetch_rakuten_min_price", new_callable=AsyncMock) as mock_rakuten, \
+         patch("main.fetch_mercari_api_price", new_callable=AsyncMock) as mock_mercari, \
+         patch("main.AsyncMessagingApi") as mock_msg_api_class:
+
+        mock_parse.return_value = parsed_item
+        # Simulate Buyee scraper timing out
+        mock_buyee.side_effect = ScrapingTimeoutError("Scraping timed out")
+        mock_tw.return_value = MagicMock(sample_prices=[])
+        mock_cn.return_value = MagicMock(sample_prices=[])
+        # Rakuten succeeded on the first concurrent fetch!
+        mock_rakuten.return_value = 3837
+        mock_mercari.return_value = None
+
+        mock_api = AsyncMock()
+        mock_msg_api_class.return_value = mock_api
+
+        await main.handle_line_events([event], access_token="test_token")
+
+        # Verify reply was sent
+        mock_api.reply_message.assert_called_once()
+        sent_messages = mock_api.reply_message.call_args[0][0].messages
+        assert len(sent_messages) == 1
+        flex_dict = sent_messages[0].contents.to_dict()
+
+        # The Rakuten price should have been retained (3837) without being re-fetched!
+        # Because it was retained, fetch_rakuten_min_price was called exactly ONCE (in Step 2), not re-called in fallback!
+        assert mock_rakuten.call_count == 1
+        card1 = flex_dict["contents"][0]
+        buttons = [c for c in card1["footer"]["contents"] if c.get("type") == "button"]
+        rakuten_btn = [b for b in buttons if "樂天" in b.get("text", "") or "樂天" in b.get("action", {}).get("label", "")][0]
+        assert "3837" in rakuten_btn["action"]["label"]
+

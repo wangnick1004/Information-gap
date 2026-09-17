@@ -195,6 +195,8 @@ async def call_mercari_scraper_api(
     elif isinstance(data, list):
         listings = data
 
+    logger.info(f"📊 [Mercari Listings] Total items fetched: {len(listings)}")
+
     # 1. Collect ALL valid numeric prices from the listings array into a list
     collected_prices: List[float] = []
     for it in listings:
@@ -219,14 +221,14 @@ async def call_mercari_scraper_api(
         elif isinstance(it, (int, float)) and it > 0:
             collected_prices.append(float(it))
 
+    logger.info(f"💰 [Mercari Raw Prices] Extracted prices before filter: {collected_prices}")
+
     # 2. Apply a filter: discard any price < 2500 JPY (edge tapes, rubber protectors, empty boxes)
     filtered_prices = [p for p in collected_prices if p >= min_valid_jpy]
 
     # 3. If the filtered list is empty, return None
     if not filtered_prices:
-        logger.info(
-            f"Mercari: all extracted prices for '{clean_kw}' were under {min_valid_jpy} JPY: {collected_prices}"
-        )
+        logger.warning(f"⚠️ [Filter Empty] All Mercari items were < 2500 JPY and filtered out.")
         return None
 
     # 4. If there are valid prices, find the minimum price from this filtered list
