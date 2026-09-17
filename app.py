@@ -27,3 +27,24 @@ from main import (  # noqa: F401
 
 # Re-export all public symbols from main
 from main import *  # noqa: F401, F403
+
+# Re-export third-party API price fetcher architecture
+from price_fetcher import (  # noqa: F401
+    MERCARI_RAPIDAPI_KEY,
+    MERCARI_SCRAPER_URL,
+    RAPIDAPI_HOST_MERCARI,
+    RAPIDAPI_HOST_RAKUTEN,
+    RAPIDAPI_KEY,
+    SERPAPI_KEY,
+    THIRD_PARTY_API_TOKEN,
+    RateLimitExceededError,
+    ThirdPartyAPIError,
+    call_mercari_scraper_api,
+    call_third_party_api,
+    fetch_mercari_api_price,
+    fetch_price,
+    format_platform_button_component,
+    get_mock_plausible_price,
+    inject_mercari_button_to_flex,
+    is_placeholder_key,
+)

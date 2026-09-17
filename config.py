@@ -22,6 +22,10 @@ class Settings(BaseSettings):
     default_exchange_rate_cny_twd: float = Field(default=4.5, alias="DEFAULT_EXCHANGE_RATE_CNY_TWD")
     default_estimated_shipping_twd: int = Field(default=150, alias="DEFAULT_ESTIMATED_SHIPPING_TWD")
     default_proxy_fee_twd: int = Field(default=50, alias="DEFAULT_PROXY_FEE_TWD")
+    rapidapi_key: Optional[str] = Field(default=None, alias="RAPIDAPI_KEY")
+    serpapi_key: Optional[str] = Field(default=None, alias="SERPAPI_KEY")
+    third_party_api_token: Optional[str] = Field(default=None, alias="THIRD_PARTY_API_TOKEN")
+    enable_mock_price_fetcher: bool = Field(default=True, alias="ENABLE_MOCK_PRICE_FETCHER")
 
     model_config = SettingsConfigDict(
         env_file=".env",

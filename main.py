@@ -75,6 +75,11 @@ from services.lightweight_fetcher import (
     filter_extreme_low_prices,
     parse_platform_first_page_prices,
 )
+from price_fetcher import (
+    fetch_mercari_api_price,
+    fetch_price,
+    inject_mercari_button_to_flex,
+)
 
 # Configure logging
 logging.basicConfig(
@@ -468,8 +473,9 @@ async def handle_line_events(events: list, access_token: str) -> None:
                 tw_task = search_taiwanese_platforms(effective_keyword)
                 cn_task = search_chinese_platforms(effective_keyword)
                 rakuten_task = fetch_rakuten_min_price(effective_jp_keyword, timeout_seconds=2.0)
-                scraper_result, tw_result, cn_result, rakuten_price = await asyncio.gather(
-                    jp_task, tw_task, cn_task, rakuten_task
+                mercari_task = fetch_mercari_api_price(effective_jp_keyword, timeout_seconds=2.5, enable_mock=False)
+                scraper_result, tw_result, cn_result, rakuten_price, mercari_api_price = await asyncio.gather(
+                    jp_task, tw_task, cn_task, rakuten_task, mercari_task
                 )
 
                 # Step 3: Compute Landed Cost & Markup Analysis
@@ -496,6 +502,15 @@ async def handle_line_events(events: list, access_token: str) -> None:
                 if rakuten_price and rakuten_price > 0:
                     dynamic_pricing.rakuten_min_price = rakuten_price
                     dynamic_pricing.platform_min_prices["rakuten"] = rakuten_price
+                if mercari_api_price and mercari_api_price > 0:
+                    dynamic_pricing.mercari_min_price = mercari_api_price
+                    dynamic_pricing.platform_min_prices["mercari"] = mercari_api_price
+
+                mercari_display_price = (
+                    f"{mercari_api_price}起"
+                    if (mercari_api_price and mercari_api_price > 0)
+                    else dynamic_pricing.mercari_min_price
+                )
 
                 # Step 5: Build LINE Flex Message UI with Dynamic Price Range & Platform Minimums
                 flex_dict = build_price_comparison_flex(
@@ -510,7 +525,7 @@ async def handle_line_events(events: list, access_token: str) -> None:
                     perfected_keyword=effective_keyword,
                     min_price=dynamic_pricing.min_price,
                     avg_price=dynamic_pricing.avg_price,
-                    mercari_min_price=dynamic_pricing.mercari_min_price,
+                    mercari_min_price=mercari_display_price,
                     shopee_min_price=dynamic_pricing.shopee_min_price,
                     taobao_min_price=dynamic_pricing.taobao_min_price,
                     yahoo_tw_min_price=dynamic_pricing.yahoo_tw_min_price,
@@ -556,10 +571,20 @@ async def handle_line_events(events: list, access_token: str) -> None:
 
                 # Attempt fast lightweight fetch if applicable
                 rakuten_fallback_price = None
+                mercari_fallback_price = None
                 try:
-                    rakuten_fallback_price = await fetch_rakuten_min_price(kw_jp, timeout_seconds=2.0)
+                    rakuten_fallback_price, mercari_fallback_price = await asyncio.gather(
+                        fetch_rakuten_min_price(kw_jp, timeout_seconds=2.0),
+                        fetch_mercari_api_price(kw_jp, timeout_seconds=2.5, enable_mock=False),
+                        return_exceptions=True,
+                    )
+                    if isinstance(rakuten_fallback_price, Exception):
+                        rakuten_fallback_price = None
+                    if isinstance(mercari_fallback_price, Exception):
+                        mercari_fallback_price = None
                 except Exception:
                     rakuten_fallback_price = None
+                    mercari_fallback_price = None
 
                 keyword_flex_dict = build_keyword_flex_message(
                     japanese_keyword=kw_jp,
@@ -574,7 +599,7 @@ async def handle_line_events(events: list, access_token: str) -> None:
                     perfected_keyword=fallback_kw if parsed_item else None,
                     min_price=None,
                     avg_price=None,
-                    mercari_min_price=None,
+                    mercari_min_price=f"{mercari_fallback_price}起" if mercari_fallback_price else None,
                     shopee_min_price=None,
                     taobao_min_price=None,
                     yahoo_tw_min_price=None,
