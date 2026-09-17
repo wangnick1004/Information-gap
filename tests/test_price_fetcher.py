@@ -79,26 +79,56 @@ async def test_fashion_resale_mercari_platform_filter_and_params():
 
 
 @pytest.mark.anyio
-async def test_data_parsing_first_valid_item_in_listings():
+async def test_data_parsing_filters_under_2500_and_finds_minimum():
     """
-    Test Step 2: Extract price from the first valid item in the 'listings' array.
+    Test Step 2: Data Parsing & Filtering:
+    - Collects ALL valid numeric prices from the 'listings' array into a list
+    - Discards any price < 2500 JPY (edge tapes, rubber protectors, empty boxes)
+    - Finds the minimum price from the filtered list (e.g., 15000 from [500, 1200, 18000, 15000, 22000])
+    - Converts to TWD (15000 * 0.21 * 1.015 = 3197.25 -> 3197 TWD)
     """
     mock_client = AsyncMock()
     mock_resp = MagicMock()
     mock_resp.status_code = 200
     mock_resp.text = json.dumps({
         "listings": [
-            {"title": "Invalid Item No Price"},
-            {"title": "Valid Mercari Item", "price": "¥25,000"},
-            {"title": "Second Mercari Item", "price": "30000"},
+            {"title": "Edge Tape", "price": "¥500"},           # < 2500 JPY discarded
+            {"title": "Rubber Protector", "price": 1200},      # < 2500 JPY discarded
+            {"title": "Empty Box", "price": "2,400"},          # < 2500 JPY discarded
+            {"title": "Viscaria Racket A", "price": "18,000"}, # valid
+            {"title": "Viscaria Racket B", "price": 15000},    # valid minimum!
+            {"title": "Viscaria Racket C", "price": "22,000"}, # valid
         ]
     })
     mock_client.get = AsyncMock(return_value=mock_resp)
 
     with patch.dict(os.environ, {"RAPIDAPI_KEY": "test_env_key"}):
-        # 25000 * 0.21 * 1.015 = 5328.75 -> 5329 TWD
+        # 15000 * 0.21 * 1.015 = 3197.25 -> 3197 TWD
         price = await fetch_mercari_api_price("ビスカリア", client=mock_client)
-        assert price == 5329
+        assert price == 3197
+
+
+@pytest.mark.anyio
+async def test_data_parsing_all_under_2500_returns_none():
+    """
+    Test that if all extracted items are under 2500 JPY, it returns None.
+    """
+    mock_client = AsyncMock()
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.text = json.dumps({
+        "listings": [
+            {"title": "Edge Tape", "price": 500},
+            {"title": "Rubber Protector", "price": 1200},
+            {"title": "Clean Sponge", "price": 800},
+            {"title": "Empty Box", "price": 2499},
+        ]
+    })
+    mock_client.get = AsyncMock(return_value=mock_resp)
+
+    with patch.dict(os.environ, {"RAPIDAPI_KEY": "test_env_key"}):
+        price = await fetch_mercari_api_price("ビスカリア", client=mock_client)
+        assert price is None
 
 
 @pytest.mark.anyio

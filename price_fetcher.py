@@ -109,6 +109,7 @@ async def call_mercari_scraper_api(
     client: Optional[Any] = None,
     exchange_rate: float = 0.21,
     overseas_fee_rate: float = 0.015,
+    min_valid_jpy: float = 2500.0,
 ) -> Optional[int]:
     """
     Perform async GET request to Fashion Resale API on RapidAPI:
@@ -118,11 +119,14 @@ async def call_mercari_scraper_api(
        - Headers:
            x-rapidapi-host: fashion-resale-api.p.rapidapi.com
            x-rapidapi-key: os.getenv("RAPIDAPI_KEY")
-    2. Data Parsing:
+    2. Data Parsing & Filtering:
        - Parse returned JSON response.
-       - Extract price from the first valid item in the 'listings' array.
+       - Collect ALL valid numeric prices from the 'listings' array into a list.
+       - Filter out any price < 2500 JPY (discarding accessories, edge tapes, protectors, empty boxes).
+       - If filtered list is empty, return None.
+       - Find the minimum price from this filtered list.
     3. Currency Conversion:
-       - Convert JPY price to TWD (JPY * 0.21 + 1.5% overseas credit card fee).
+       - Convert this valid minimum price to TWD (JPY * 0.21 + 1.5% overseas credit card fee).
     """
     clean_kw = jp_keyword.strip()
     if not clean_kw:
@@ -191,8 +195,8 @@ async def call_mercari_scraper_api(
     elif isinstance(data, list):
         listings = data
 
-    # Extract price from the first valid item in the 'listings' array
-    first_price = None
+    # 1. Collect ALL valid numeric prices from the listings array into a list
+    collected_prices: List[float] = []
     for it in listings:
         if isinstance(it, dict):
             raw_p = it.get("price") or it.get("current_price") or it.get("extracted_price")
@@ -209,20 +213,28 @@ async def call_mercari_scraper_api(
                     )
                     val = float(clean_str)
                     if val > 0:
-                        first_price = val
-                        break
+                        collected_prices.append(val)
                 except (ValueError, TypeError):
                     continue
         elif isinstance(it, (int, float)) and it > 0:
-            first_price = float(it)
-            break
+            collected_prices.append(float(it))
 
-    if first_price is None:
+    # 2. Apply a filter: discard any price < 2500 JPY (edge tapes, rubber protectors, empty boxes)
+    filtered_prices = [p for p in collected_prices if p >= min_valid_jpy]
+
+    # 3. If the filtered list is empty, return None
+    if not filtered_prices:
+        logger.info(
+            f"Mercari: all extracted prices for '{clean_kw}' were under {min_valid_jpy} JPY: {collected_prices}"
+        )
         return None
 
-    # Convert JPY price to TWD (JPY * 0.21 + 1.5% overseas credit card fee)
+    # 4. If there are valid prices, find the minimum price from this filtered list
+    min_price_jpy = min(filtered_prices)
+
+    # 5. Convert this valid minimum price to TWD and return it
     twd = convert_to_twd(
-        first_price,
+        min_price_jpy,
         currency="JPY",
         exchange_rate=exchange_rate,
         overseas_fee_rate=overseas_fee_rate,
