@@ -59,7 +59,7 @@ async def test_fashion_resale_mercari_platform_filter_and_params():
     with patch.dict(os.environ, {"RAPIDAPI_KEY": test_env_key}):
         twd_price = await call_mercari_scraper_api(
             jp_keyword="ビスカリア",
-            timeout_seconds=2.5,
+            timeout_seconds=8.0,
             client=mock_client,
         )
 
@@ -173,14 +173,18 @@ async def test_mercari_api_rate_limit_exceeded_fallback():
 
 
 @pytest.mark.anyio
-async def test_mercari_api_network_timeout_fallback():
-    """Test strict network timeout returns None gracefully."""
+async def test_mercari_api_network_timeout_fallback(caplog):
+    """Test strict network timeout returns None gracefully and logs clear timeout warning."""
+    import logging
     mock_client = AsyncMock()
-    mock_client.get = AsyncMock(side_effect=asyncio.TimeoutError("Fashion Resale API timed out"))
+    mock_client.get = AsyncMock(side_effect=asyncio.TimeoutError())
 
-    with patch.dict(os.environ, {"RAPIDAPI_KEY": "test_env_key"}):
-        price = await fetch_mercari_api_price("ビスカリア", client=mock_client, timeout_seconds=2.5)
-        assert price is None
+    with caplog.at_level(logging.WARNING):
+        with patch.dict(os.environ, {"RAPIDAPI_KEY": "test_env_key"}):
+            price = await fetch_mercari_api_price("ビスカリア", client=mock_client, timeout_seconds=8.0)
+            assert price is None
+
+    assert "⚠️ [Timeout] Third-Party API request exceeded limit." in caplog.text
 
 
 @pytest.mark.anyio
@@ -303,3 +307,14 @@ async def test_fetch_price_mock_fallback():
     # Empty keyword returns None
     assert await fetch_price("mercari", "") is None
     assert await fetch_price("mercari", "   ") is None
+
+
+def test_default_timeout_signatures():
+    """Verify default timeout_seconds is 8.0 for fetch_mercari_api_price and fetch_price."""
+    import inspect
+    sig_mercari = inspect.signature(fetch_mercari_api_price)
+    assert sig_mercari.parameters["timeout_seconds"].default == 8.0
+
+    sig_fetch = inspect.signature(fetch_price)
+    assert sig_fetch.parameters["timeout_seconds"].default == 8.0
+

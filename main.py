@@ -473,7 +473,7 @@ async def handle_line_events(events: list, access_token: str) -> None:
                 tw_task = search_taiwanese_platforms(effective_keyword)
                 cn_task = search_chinese_platforms(effective_keyword)
                 rakuten_task = fetch_rakuten_min_price(effective_jp_keyword, timeout_seconds=2.0)
-                mercari_task = fetch_mercari_api_price(effective_jp_keyword, timeout_seconds=2.5, enable_mock=False)
+                mercari_task = fetch_mercari_api_price(effective_jp_keyword, timeout_seconds=8.0, enable_mock=False)
                 scraper_result, tw_result, cn_result, rakuten_price, mercari_api_price = await asyncio.gather(
                     jp_task, tw_task, cn_task, rakuten_task, mercari_task
                 )
@@ -575,7 +575,7 @@ async def handle_line_events(events: list, access_token: str) -> None:
                 try:
                     rakuten_fallback_price, mercari_fallback_price = await asyncio.gather(
                         fetch_rakuten_min_price(kw_jp, timeout_seconds=2.0),
-                        fetch_mercari_api_price(kw_jp, timeout_seconds=2.5, enable_mock=False),
+                        fetch_mercari_api_price(kw_jp, timeout_seconds=8.0, enable_mock=False),
                         return_exceptions=True,
                     )
                     if isinstance(rakuten_fallback_price, Exception):

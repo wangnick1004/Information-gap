@@ -104,7 +104,7 @@ def get_mock_plausible_price(platform: str, keyword: str = "") -> int:
 
 async def call_mercari_scraper_api(
     jp_keyword: str,
-    timeout_seconds: float = 2.5,
+    timeout_seconds: float = 8.0,
     session: Optional[aiohttp.ClientSession] = None,
     client: Optional[Any] = None,
     exchange_rate: float = 0.21,
@@ -245,7 +245,7 @@ async def call_mercari_scraper_api(
 async def call_third_party_api(
     platform: str,
     keyword: str,
-    timeout_seconds: float = 2.5,
+    timeout_seconds: float = 8.0,
     session: Optional[aiohttp.ClientSession] = None,
     client: Optional[Any] = None,
 ) -> Optional[int]:
@@ -342,7 +342,7 @@ async def call_third_party_api(
 async def fetch_price(
     platform: str,
     keyword: str,
-    timeout_seconds: float = 2.5,
+    timeout_seconds: float = 8.0,
     enable_mock: bool = True,
     session: Optional[aiohttp.ClientSession] = None,
     client: Optional[Any] = None,
@@ -362,7 +362,7 @@ async def fetch_price(
     Args:
         platform: Marketplace platform name ('mercari', 'rakuten', 'shopee', etc.).
         keyword: Search query string.
-        timeout_seconds: Strict network timeout in seconds (default 2.5s).
+        timeout_seconds: Strict network timeout in seconds (default 8.0s).
         enable_mock: Whether to return plausible mock price when no API key is set (default True).
         session: Optional pre-configured aiohttp.ClientSession.
         client: Optional pre-configured mock client.
@@ -395,7 +395,10 @@ async def fetch_price(
             # Explicit requirement: rate limit exceeded must return None for "(點擊查看)" fallback
             logger.warning(f"🛑 [Rate Limit Intercepted] {rle}. Returning None for UI fallback.")
             return None
-        except (ThirdPartyAPIError, asyncio.TimeoutError, aiohttp.ClientError, Exception) as exc:
+        except asyncio.TimeoutError:
+            logger.warning("⚠️ [Timeout] Third-Party API request exceeded limit.")
+            return None
+        except (ThirdPartyAPIError, aiohttp.ClientError, Exception) as exc:
             # Explicit requirement: failure must gracefully catch exception and return None
             logger.warning(f"⚠️ [Third-Party API Failed] {exc}. Returning None for UI fallback.")
             return None
@@ -411,13 +414,13 @@ async def fetch_price(
 
 async def fetch_mercari_api_price(
     jp_keyword: str,
-    timeout_seconds: float = 2.5,
+    timeout_seconds: float = 8.0,
     session: Optional[aiohttp.ClientSession] = None,
     client: Optional[Any] = None,
     enable_mock: bool = False,
 ) -> Optional[int]:
     """
-    Fetch real Mercari min price in TWD via RapidAPI POST endpoint with strict 2.5s timeout.
+    Fetch real Mercari min price in TWD via RapidAPI POST endpoint with strict 8.0s timeout.
     Returns None on failure, timeout, or rate-limit for graceful fallback to '(點擊查看)'.
     """
     return await fetch_price(
