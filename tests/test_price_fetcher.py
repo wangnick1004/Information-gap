@@ -1,11 +1,12 @@
 import asyncio
 import json
+import os
 from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app import (
-    MERCARI_RAPIDAPI_KEY,
-    MERCARI_SCRAPER_URL,
+    FASHION_RESALE_API_URL,
+    RAPIDAPI_HOST_FASHION_RESALE,
     RAPIDAPI_HOST_MERCARI,
     RAPIDAPI_HOST_RAKUTEN,
     RAPIDAPI_KEY,
@@ -31,124 +32,125 @@ def test_configuration_and_constants():
     assert is_placeholder_key(None) is True
     assert is_placeholder_key("live_api_key_abc123") is False
 
-    assert MERCARI_SCRAPER_URL == "https://mercari-japan-ultimate-scraper.p.rapidapi.com/mercari/search"
-    assert RAPIDAPI_HOST_MERCARI == "mercari-japan-ultimate-scraper.p.rapidapi.com"
-    assert MERCARI_RAPIDAPI_KEY == "a9f0474e1dmsh9c56716a5c32a97p19fc3ejsn7ad627df9796"
-    assert is_placeholder_key(MERCARI_RAPIDAPI_KEY) is False
-    assert is_placeholder_key(RAPIDAPI_KEY) is False or isinstance(RAPIDAPI_KEY, str)
+    assert FASHION_RESALE_API_URL == "https://fashion-resale-api.p.rapidapi.com/search"
+    assert RAPIDAPI_HOST_FASHION_RESALE == "fashion-resale-api.p.rapidapi.com"
+    assert RAPIDAPI_HOST_MERCARI == "fashion-resale-api.p.rapidapi.com"
 
 
 @pytest.mark.anyio
-async def test_mercari_async_post_request_and_payload():
+async def test_fashion_resale_mercari_platform_filter_and_params():
     """
-    Test Step 1: Setup async POST request with URL, headers, and keyword payload.
+    Test Step 1: Platform Filter:
+    - Querystring must strictly include {"q": keyword, "platform": "mercari"}
+    - Headers: x-rapidapi-host and x-rapidapi-key from environment
     """
     mock_client = AsyncMock()
     mock_resp = MagicMock()
     mock_resp.status_code = 200
     mock_resp.text = json.dumps({
-        "items": [
-            {"name": "Box only", "price": 300},        # < 500 JPY filtered out
-            {"name": "Accessory", "price": 450},       # < 500 JPY filtered out
-            {"name": "Pokemon Item A", "price": 1000}, # Valid min price
-            {"name": "Pokemon Item B", "price": 2500},
-            {"name": "Pokemon Item C", "price": 3000},
+        "listings": [
+            {"title": "Butterfly Viscaria FL", "price": 18000, "platform": "mercari"},
+            {"title": "Butterfly Viscaria ST", "price": 20000, "platform": "mercari"},
         ]
     })
-    mock_client.post = AsyncMock(return_value=mock_resp)
+    mock_client.get = AsyncMock(return_value=mock_resp)
 
-    jp_keyword = "ポケモン モンコレ"
-    twd_price = await call_mercari_scraper_api(
-        jp_keyword=jp_keyword,
-        timeout_seconds=2.5,
-        client=mock_client,
-    )
+    test_env_key = "test_rapidapi_key_env_12345"
+    with patch.dict(os.environ, {"RAPIDAPI_KEY": test_env_key}):
+        twd_price = await call_mercari_scraper_api(
+            jp_keyword="ビスカリア",
+            timeout_seconds=2.5,
+            client=mock_client,
+        )
 
-    # Verify POST request parameters
-    mock_client.post.assert_called_once()
-    called_url = mock_client.post.call_args[0][0]
-    called_kwargs = mock_client.post.call_args[1]
+    # Verify GET request parameters and querystring
+    mock_client.get.assert_called_once()
+    called_url = mock_client.get.call_args[0][0]
+    called_kwargs = mock_client.get.call_args[1]
 
-    assert called_url == "https://mercari-japan-ultimate-scraper.p.rapidapi.com/mercari/search"
-    assert called_kwargs["headers"]["Content-Type"] == "application/json"
-    assert called_kwargs["headers"]["x-rapidapi-host"] == "mercari-japan-ultimate-scraper.p.rapidapi.com"
-    assert called_kwargs["headers"]["x-rapidapi-key"] == "a9f0474e1dmsh9c56716a5c32a97p19fc3ejsn7ad627df9796"
-    assert called_kwargs["json"] == {"keyword": jp_keyword}
+    assert called_url == "https://fashion-resale-api.p.rapidapi.com/search"
+    assert called_kwargs["headers"]["x-rapidapi-host"] == "fashion-resale-api.p.rapidapi.com"
+    assert called_kwargs["headers"]["x-rapidapi-key"] == test_env_key
+    assert called_kwargs["params"] == {"q": "ビスカリア", "platform": "mercari"}
 
-    # Verify Currency Conversion (Step 3):
-    # min valid price = 1000 JPY -> 1000 * 0.21 * 1.015 = 213.15 -> 213 TWD
-    assert twd_price == 213
+    # Verify Currency Conversion:
+    # 18000 * 0.21 * 1.015 = 3836.7 -> 3837 TWD
+    assert twd_price == 3837
 
 
 @pytest.mark.anyio
-async def test_data_extraction_and_cleaning_filters_under_500_jpy():
+async def test_data_parsing_first_valid_item_in_listings():
     """
-    Test Step 2: Data Extraction & Cleaning:
-    - Extracts first 5 to 10 items
-    - Filters out extreme low values (< 500 JPY)
-    - Finds the minimum valid price
+    Test Step 2: Extract price from the first valid item in the 'listings' array.
     """
     mock_client = AsyncMock()
     mock_resp = MagicMock()
     mock_resp.status_code = 200
     mock_resp.text = json.dumps({
-        "data": [
-            {"title": "Empty Box", "itemPrice": "¥200"},
-            {"title": "Manual Leaflet", "itemPrice": "499"},
-            {"title": "Valid Console", "itemPrice": "15,000"},
-            {"title": "Valid Game", "itemPrice": "2,000"},
-            {"title": "Valid Controller", "itemPrice": "3,500"},
+        "listings": [
+            {"title": "Invalid Item No Price"},
+            {"title": "Valid Mercari Item", "price": "¥25,000"},
+            {"title": "Second Mercari Item", "price": "30000"},
         ]
     })
-    mock_client.post = AsyncMock(return_value=mock_resp)
+    mock_client.get = AsyncMock(return_value=mock_resp)
 
-    # Valid prices are: 15000, 2000, 3500. Min valid price is 2000 JPY.
-    # 2000 * 0.21 * 1.015 = 426.3 -> 426 TWD
-    price = await fetch_mercari_api_price("ニンテンドー スイッチ", client=mock_client)
-    assert price == 426
+    with patch.dict(os.environ, {"RAPIDAPI_KEY": "test_env_key"}):
+        # 25000 * 0.21 * 1.015 = 5328.75 -> 5329 TWD
+        price = await fetch_mercari_api_price("ビスカリア", client=mock_client)
+        assert price == 5329
 
 
 @pytest.mark.anyio
-async def test_data_extraction_all_under_500_jpy_returns_none():
-    """Test that if all extracted items are under 500 JPY, it returns None."""
+async def test_security_first_no_hardcoded_key_fails_when_env_empty():
+    """
+    Test Step 3: Security First:
+    When RAPIDAPI_KEY is not configured in os.environ or is placeholder,
+    it must NOT use any hardcoded fallback key and gracefully return None.
+    """
+    with patch.dict(os.environ, {"RAPIDAPI_KEY": ""}, clear=True), \
+         patch("price_fetcher.RAPIDAPI_KEY", ""):
+        price = await fetch_mercari_api_price("ビスカリア", enable_mock=False)
+        assert price is None
+
+
+@pytest.mark.anyio
+async def test_data_parsing_empty_listings_returns_none():
+    """Test that empty listings array returns None gracefully."""
     mock_client = AsyncMock()
     mock_resp = MagicMock()
     mock_resp.status_code = 200
-    mock_resp.text = json.dumps({
-        "items": [
-            {"price": 100},
-            {"price": 200},
-            {"price": 300},
-            {"price": 450},
-        ]
-    })
-    mock_client.post = AsyncMock(return_value=mock_resp)
+    mock_resp.text = json.dumps({"listings": []})
+    mock_client.get = AsyncMock(return_value=mock_resp)
 
-    price = await fetch_mercari_api_price("junk item", client=mock_client)
-    assert price is None
+    with patch.dict(os.environ, {"RAPIDAPI_KEY": "test_env_key"}):
+        price = await fetch_mercari_api_price("nonexistent item", client=mock_client)
+        assert price is None
 
 
 @pytest.mark.anyio
 async def test_mercari_api_rate_limit_exceeded_fallback():
-    """Test HTTP 429 rate limit raises or returns None gracefully."""
+    """Test HTTP 429 rate limit returns None gracefully."""
     mock_client = AsyncMock()
     mock_resp = MagicMock()
     mock_resp.status_code = 429
     mock_resp.text = json.dumps({"message": "You have exceeded the RATE limit. (Too Many Requests)"})
-    mock_client.post = AsyncMock(return_value=mock_resp)
+    mock_client.get = AsyncMock(return_value=mock_resp)
 
-    price = await fetch_mercari_api_price("Sony WH-1000XM5", client=mock_client)
-    assert price is None
+    with patch.dict(os.environ, {"RAPIDAPI_KEY": "test_env_key"}):
+        price = await fetch_mercari_api_price("ビスカリア", client=mock_client)
+        assert price is None
 
 
 @pytest.mark.anyio
 async def test_mercari_api_network_timeout_fallback():
-    """Test strict 2.5s network timeout returns None gracefully."""
+    """Test strict network timeout returns None gracefully."""
     mock_client = AsyncMock()
-    mock_client.post = AsyncMock(side_effect=asyncio.TimeoutError("Mercari API timed out after 2.5s"))
+    mock_client.get = AsyncMock(side_effect=asyncio.TimeoutError("Fashion Resale API timed out"))
 
-    price = await fetch_mercari_api_price("Sony WH-1000XM5", client=mock_client, timeout_seconds=2.5)
-    assert price is None
+    with patch.dict(os.environ, {"RAPIDAPI_KEY": "test_env_key"}):
+        price = await fetch_mercari_api_price("ビスカリア", client=mock_client, timeout_seconds=2.5)
+        assert price is None
 
 
 @pytest.mark.anyio
@@ -158,10 +160,11 @@ async def test_mercari_api_server_error_fallback():
     mock_resp = MagicMock()
     mock_resp.status_code = 500
     mock_resp.text = "Internal Server Error"
-    mock_client.post = AsyncMock(return_value=mock_resp)
+    mock_client.get = AsyncMock(return_value=mock_resp)
 
-    price = await fetch_mercari_api_price("Sony WH-1000XM5", client=mock_client)
-    assert price is None
+    with patch.dict(os.environ, {"RAPIDAPI_KEY": "test_env_key"}):
+        price = await fetch_mercari_api_price("ビスカリア", client=mock_client)
+        assert price is None
 
 
 def test_ui_integration_format_platform_button_component():
@@ -173,21 +176,21 @@ def test_ui_integration_format_platform_button_component():
     # Valid price with default "起" suffix for Mercari
     btn_with_price = format_platform_button_component(
         platform_name="Mercari",
-        price=213,
-        target_url="https://buyee.jp/mercari/search?keyword=pokemon",
+        price=3837,
+        target_url="https://buyee.jp/mercari/search?keyword=viscaria",
         color="#E60012",
     )
     assert btn_with_price["type"] == "button"
-    assert btn_with_price["text"] == "Mercari (約 NT$213起)"
-    assert btn_with_price["action"]["label"] == "Mercari (約 NT$213起)"
-    assert btn_with_price["action"]["uri"] == "https://buyee.jp/mercari/search?keyword=pokemon"
+    assert btn_with_price["text"] == "Mercari (約 NT$3837起)"
+    assert btn_with_price["action"]["label"] == "Mercari (約 NT$3837起)"
+    assert btn_with_price["action"]["uri"] == "https://buyee.jp/mercari/search?keyword=viscaria"
     assert btn_with_price["color"] == "#E60012"
 
     # Fallback when price is None
     btn_fallback = format_platform_button_component(
         platform_name="Mercari",
         price=None,
-        target_url="https://buyee.jp/mercari/search?keyword=pokemon",
+        target_url="https://buyee.jp/mercari/search?keyword=viscaria",
     )
     assert btn_fallback["text"] == "Mercari (點擊查看)"
     assert btn_fallback["action"]["label"] == "Mercari (點擊查看)"
@@ -196,7 +199,7 @@ def test_ui_integration_format_platform_button_component():
     btn_zero = format_platform_button_component(
         platform_name="Mercari",
         price=0,
-        target_url="https://buyee.jp/mercari/search?keyword=pokemon",
+        target_url="https://buyee.jp/mercari/search?keyword=viscaria",
     )
     assert btn_zero["text"] == "Mercari (點擊查看)"
     assert btn_zero["action"]["label"] == "Mercari (點擊查看)"
@@ -241,11 +244,11 @@ def test_ui_integration_inject_mercari_button_to_flex():
         ],
     }
 
-    # Inject price 1500 -> "Mercari (約 NT$1500起)"
-    updated = inject_mercari_button_to_flex(flex_sample, 1500)
+    # Inject price 3837 -> "Mercari (約 NT$3837起)"
+    updated = inject_mercari_button_to_flex(flex_sample, 3837)
     mercari_btn = updated["contents"][0]["footer"]["contents"][0]
-    assert mercari_btn["text"] == "Mercari (約 NT$1500起)"
-    assert mercari_btn["action"]["label"] == "Mercari (約 NT$1500起)"
+    assert mercari_btn["text"] == "Mercari (約 NT$3837起)"
+    assert mercari_btn["action"]["label"] == "Mercari (約 NT$3837起)"
 
     # Rakuten button remains unchanged
     rakuten_btn = updated["contents"][0]["footer"]["contents"][1]
@@ -261,7 +264,8 @@ def test_ui_integration_inject_mercari_button_to_flex():
 @pytest.mark.anyio
 async def test_fetch_price_mock_fallback():
     """Test mock fallback returns plausible price when enable_mock=True."""
-    with patch("price_fetcher.RAPIDAPI_KEY", "YOUR_RAPIDAPI_KEY_HERE"):
+    with patch.dict(os.environ, {"RAPIDAPI_KEY": ""}, clear=True), \
+         patch("price_fetcher.RAPIDAPI_KEY", ""):
         price_mercari = await fetch_price("mercari", "Sony WH-1000XM5", enable_mock=True)
         assert isinstance(price_mercari, int)
         assert price_mercari == 1500

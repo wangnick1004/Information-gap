@@ -30,8 +30,8 @@ from main import *  # noqa: F401, F403
 
 # Re-export third-party API price fetcher architecture
 from price_fetcher import (  # noqa: F401
-    MERCARI_RAPIDAPI_KEY,
-    MERCARI_SCRAPER_URL,
+    FASHION_RESALE_API_URL,
+    RAPIDAPI_HOST_FASHION_RESALE,
     RAPIDAPI_HOST_MERCARI,
     RAPIDAPI_HOST_RAKUTEN,
     RAPIDAPI_KEY,

@@ -3,8 +3,8 @@ services/price_fetcher.py - Re-export price_fetcher module.
 """
 
 from price_fetcher import (
-    MERCARI_RAPIDAPI_KEY,
-    MERCARI_SCRAPER_URL,
+    FASHION_RESALE_API_URL,
+    RAPIDAPI_HOST_FASHION_RESALE,
     RAPIDAPI_HOST_MERCARI,
     RAPIDAPI_HOST_RAKUTEN,
     RAPIDAPI_KEY,
@@ -23,8 +23,8 @@ from price_fetcher import (
 )
 
 __all__ = [
-    "MERCARI_SCRAPER_URL",
-    "MERCARI_RAPIDAPI_KEY",
+    "FASHION_RESALE_API_URL",
+    "RAPIDAPI_HOST_FASHION_RESALE",
     "RAPIDAPI_KEY",
     "SERPAPI_KEY",
     "THIRD_PARTY_API_TOKEN",

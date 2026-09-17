@@ -23,21 +23,28 @@ from services.pricing import convert_to_twd
 logger = logging.getLogger("line_bot.price_fetcher")
 
 # --- Configuration & RapidAPI / Third-Party Constants ---
-MERCARI_SCRAPER_URL: str = os.getenv(
-    "MERCARI_SCRAPER_URL",
-    "https://mercari-japan-ultimate-scraper.p.rapidapi.com/mercari/search",
-)
-RAPIDAPI_HOST_MERCARI: str = os.getenv(
-    "RAPIDAPI_HOST_MERCARI",
-    "mercari-japan-ultimate-scraper.p.rapidapi.com",
-)
-MERCARI_RAPIDAPI_KEY: str = "a9f0474e1dmsh9c56716a5c32a97p19fc3ejsn7ad627df9796"
+from dotenv import load_dotenv
 
-RAPIDAPI_KEY: str = (
-    getattr(settings, "rapidapi_key", None)
-    or os.getenv("RAPIDAPI_KEY")
-    or MERCARI_RAPIDAPI_KEY
+# Ensure environment variables are loaded
+load_dotenv()
+
+FASHION_RESALE_API_URL: str = os.getenv(
+    "FASHION_RESALE_API_URL",
+    "https://fashion-resale-api.p.rapidapi.com/search",
 )
+RAPIDAPI_HOST_FASHION_RESALE: str = os.getenv(
+    "RAPIDAPI_HOST_FASHION_RESALE",
+    "fashion-resale-api.p.rapidapi.com",
+)
+RAPIDAPI_HOST_MERCARI: str = RAPIDAPI_HOST_FASHION_RESALE
+
+# Security First: Read strictly from os.getenv("RAPIDAPI_KEY"), no hardcoded key
+RAPIDAPI_KEY: str = (
+    os.getenv("RAPIDAPI_KEY")
+    or getattr(settings, "rapidapi_key", None)
+    or ""
+).strip()
+
 SERPAPI_KEY: str = (
     getattr(settings, "serpapi_key", None)
     or os.getenv("SERPAPI_KEY")
@@ -65,7 +72,7 @@ class RateLimitExceededError(ThirdPartyAPIError):
 
 
 def is_placeholder_key(key: Optional[str]) -> bool:
-    """Check if an API key is a placeholder or not yet provided."""
+    """Check if an API key is a placeholder, empty, or not yet provided."""
     if not key or not str(key).strip():
         return True
     upper = str(key).strip().upper()
@@ -102,39 +109,39 @@ async def call_mercari_scraper_api(
     client: Optional[Any] = None,
     exchange_rate: float = 0.21,
     overseas_fee_rate: float = 0.015,
-    min_valid_jpy: float = 500.0,
-    max_items: int = 10,
 ) -> Optional[int]:
     """
-    Perform async POST request to Mercari Japan Ultimate Scraper API on RapidAPI:
-    1. Setup async POST request:
-       - URL: https://mercari-japan-ultimate-scraper.p.rapidapi.com/mercari/search
+    Perform async GET request to Fashion Resale API on RapidAPI:
+    1. Platform Filter:
+       - URL: https://fashion-resale-api.p.rapidapi.com/search
+       - Querystring: {"q": jp_keyword, "platform": "mercari"}
        - Headers:
-           Content-Type: application/json
-           x-rapidapi-host: mercari-japan-ultimate-scraper.p.rapidapi.com
-           x-rapidapi-key: a9f0474e1dmsh9c56716a5c32a97p19fc3ejsn7ad627df9796
-       - Payload: {"keyword": jp_keyword}
-    2. Data Extraction & Cleaning:
+           x-rapidapi-host: fashion-resale-api.p.rapidapi.com
+           x-rapidapi-key: os.getenv("RAPIDAPI_KEY")
+    2. Data Parsing:
        - Parse returned JSON response.
-       - Extract prices of the first 5 to 10 items.
-       - Filter out extreme low values (< 500 JPY to avoid empty boxes or accessories).
-       - Find the minimum valid price.
+       - Extract price from the first valid item in the 'listings' array.
     3. Currency Conversion:
-       - Convert minimum JPY price to TWD (JPY * 0.21 + 1.5% overseas credit card fee).
+       - Convert JPY price to TWD (JPY * 0.21 + 1.5% overseas credit card fee).
     """
     clean_kw = jp_keyword.strip()
     if not clean_kw:
         return None
 
-    api_key = RAPIDAPI_KEY if not is_placeholder_key(RAPIDAPI_KEY) else MERCARI_RAPIDAPI_KEY
+    api_key = os.getenv("RAPIDAPI_KEY") or getattr(settings, "rapidapi_key", None) or RAPIDAPI_KEY
+    if is_placeholder_key(api_key):
+        raise ThirdPartyAPIError("No RapidAPI key configured in environment.")
+
     headers = {
-        "Content-Type": "application/json",
         "Accept": "application/json",
-        "x-rapidapi-host": RAPIDAPI_HOST_MERCARI,
+        "x-rapidapi-host": RAPIDAPI_HOST_FASHION_RESALE,
         "x-rapidapi-key": api_key,
     }
-    payload = {"keyword": clean_kw}
-    url = MERCARI_SCRAPER_URL
+    params = {
+        "q": clean_kw,
+        "platform": "mercari",
+    }
+    url = FASHION_RESALE_API_URL
 
     timeout_config = aiohttp.ClientTimeout(
         total=timeout_seconds,
@@ -142,28 +149,17 @@ async def call_mercari_scraper_api(
     )
 
     if client is not None:
-        # Check client method for test mocks (support both mock client.post and client.get)
-        has_post_mock = hasattr(client, "post") and (
-            getattr(client.post, "_mock_return_value", None) is not None
-            or getattr(client.post, "side_effect", None) is not None
-            or not hasattr(client, "get")
-            or getattr(client.get, "_mock_return_value", None) is None
-        )
-        if has_post_mock:
-            resp = await client.post(url, headers=headers, json=payload, timeout=timeout_seconds)
-        else:
-            resp = await client.get(url, headers=headers, timeout=timeout_seconds)
-
+        # Support mock client with get
+        resp = await client.get(url, headers=headers, params=params, timeout=timeout_seconds)
         status_code = getattr(resp, "status_code", getattr(resp, "status", 200))
         text = resp.text if isinstance(resp.text, str) else await resp.text()
     else:
         close_session = False
         if session is None or session.closed:
-            # Set trust_env=False to avoid local proxy resolution issues
             session = aiohttp.ClientSession(trust_env=False)
             close_session = True
         try:
-            async with session.post(url, headers=headers, json=payload, timeout=timeout_config) as resp:
+            async with session.get(url, headers=headers, params=params, timeout=timeout_config) as resp:
                 status_code = resp.status
                 text = await resp.text()
         finally:
@@ -172,47 +168,34 @@ async def call_mercari_scraper_api(
 
     # Rate Limit Interception
     if status_code == 429:
-        raise RateLimitExceededError("Mercari RapidAPI rate limit exceeded (HTTP 429)")
+        raise RateLimitExceededError("Fashion Resale RapidAPI rate limit exceeded (HTTP 429)")
 
     if status_code != 200:
-        raise ThirdPartyAPIError(f"Mercari RapidAPI returned HTTP {status_code}: {text[:100]}")
+        raise ThirdPartyAPIError(f"Fashion Resale RapidAPI returned HTTP {status_code}: {text[:100]}")
 
     try:
         data = json.loads(text)
     except Exception as exc:
-        raise ThirdPartyAPIError(f"Failed to parse Mercari response JSON: {exc}")
+        raise ThirdPartyAPIError(f"Failed to parse Fashion Resale response JSON: {exc}")
 
     # Check for rate limit indicators in payload
     if isinstance(data, dict):
         msg = str(data.get("message", "")).lower()
         if "rate limit" in msg or "quota exceeded" in msg or "too many requests" in msg:
-            raise RateLimitExceededError(f"Mercari API quota exceeded: {msg}")
+            raise RateLimitExceededError(f"Fashion Resale API quota exceeded: {msg}")
 
-    # Extract items list from JSON structure
-    items_list: List[Any] = []
-    if isinstance(data, list):
-        items_list = data
-    elif isinstance(data, dict):
-        for key in ("items", "data", "products", "results", "result", "listings"):
-            candidate = data.get(key)
-            if isinstance(candidate, list):
-                items_list = candidate
-                break
-        if not items_list:
-            for val in data.values():
-                if isinstance(val, list) and val and isinstance(val[0], dict):
-                    items_list = val
-                    break
+    # Extract listings array
+    listings = []
+    if isinstance(data, dict):
+        listings = data.get("listings") or data.get("items") or data.get("data") or []
+    elif isinstance(data, list):
+        listings = data
 
-    # Extract prices of the first 5 to 10 items
-    extracted_prices: List[float] = []
-    for it in items_list[:max_items]:
+    # Extract price from the first valid item in the 'listings' array
+    first_price = None
+    for it in listings:
         if isinstance(it, dict):
-            raw_p = None
-            for pk in ("price", "itemPrice", "extracted_price", "raw_price", "current_price", "cost"):
-                if pk in it and it[pk] is not None:
-                    raw_p = it[pk]
-                    break
+            raw_p = it.get("price") or it.get("current_price") or it.get("extracted_price")
             if raw_p is not None:
                 try:
                     clean_str = (
@@ -226,29 +209,20 @@ async def call_mercari_scraper_api(
                     )
                     val = float(clean_str)
                     if val > 0:
-                        extracted_prices.append(val)
+                        first_price = val
+                        break
                 except (ValueError, TypeError):
                     continue
         elif isinstance(it, (int, float)) and it > 0:
-            extracted_prices.append(float(it))
+            first_price = float(it)
+            break
 
-    if not extracted_prices:
+    if first_price is None:
         return None
 
-    # Filter out extreme low values (under 500 JPY to avoid empty boxes or accessories)
-    valid_prices = [p for p in extracted_prices if p >= min_valid_jpy]
-    if not valid_prices:
-        logger.info(
-            f"Mercari: all extracted prices for '{clean_kw}' were under {min_valid_jpy} JPY: {extracted_prices}"
-        )
-        return None
-
-    # Find minimum valid price
-    min_jpy = min(valid_prices)
-
-    # Convert minimum JPY price to TWD (JPY * 0.21 + 1.5% overseas credit card fee)
+    # Convert JPY price to TWD (JPY * 0.21 + 1.5% overseas credit card fee)
     twd = convert_to_twd(
-        min_jpy,
+        first_price,
         currency="JPY",
         exchange_rate=exchange_rate,
         overseas_fee_rate=overseas_fee_rate,
