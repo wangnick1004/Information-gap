@@ -46,6 +46,23 @@ RAPIDAPI_KEY: str = (
     or ""
 ).strip()
 
+# Shopee RapidAPI Configuration: Read strictly via os.getenv(), no hardcoded key
+RAPIDAPI_KEY_SHOPEE: str = (
+    os.getenv("RAPIDAPI_KEY_SHOPEE")
+    or getattr(settings, "rapidapi_key_shopee", None)
+    or ""
+).strip()
+RAPIDAPI_HOST_SHOPEE: str = (
+    os.getenv("RAPIDAPI_HOST_SHOPEE")
+    or getattr(settings, "rapidapi_host_shopee", None)
+    or "shopee-api.p.rapidapi.com"
+).strip()
+SHOPEE_API_URL: str = (
+    os.getenv("SHOPEE_API_URL")
+    or getattr(settings, "shopee_api_url", None)
+    or (f"https://{RAPIDAPI_HOST_SHOPEE}/search" if RAPIDAPI_HOST_SHOPEE else "")
+)
+
 SERPAPI_KEY: str = (
     getattr(settings, "serpapi_key", None)
     or os.getenv("SERPAPI_KEY")
@@ -61,7 +78,7 @@ THIRD_PARTY_API_TOKEN: str = (
 RAPIDAPI_HOST_RAKUTEN: str = os.getenv("RAPIDAPI_HOST_RAKUTEN", "rakuten-item-search.p.rapidapi.com")
 SERPAPI_BASE_URL: str = os.getenv("SERPAPI_BASE_URL", "https://serpapi.com/search.json")
 
-# Base Blacklist Definition for Title Filtering
+# Base Blacklist Definition for Title Filtering (Mercari)
 BASE_BLACKLIST: List[str] = [
     "ケース",
     "カバー",
@@ -75,6 +92,102 @@ BASE_BLACKLIST: List[str] = [
     "box only",
 ]
 
+# Shopee Base Blacklist for Low-Cost Accessories & Noise
+SHOPEE_BASE_BLACKLIST: List[str] = [
+    # Screen protectors & films
+    "保護貼",
+    "玻璃貼",
+    "鋼化膜",
+    "保護膜",
+    "貼膜",
+    "鏡頭貼",
+    # Cases & covers
+    "保護殼",
+    "手機殼",
+    "保護套",
+    "防摔殼",
+    "清水套",
+    "果凍套",
+    "矽膠套",
+    # Empty boxes, parts, junk
+    "空盒",
+    "空箱",
+    "零件",
+    "配件",
+    "零件機",
+    "故障品",
+    "報廢",
+    # Cross-language noise terms
+    "ケース",
+    "カバー",
+    "フィルム",
+    "空箱",
+    "ジャンク",
+    "保護",
+    "パーツ",
+    "部品",
+    "box only",
+    "case",
+    "cover",
+    "film",
+    "protector",
+]
+
+# Semantic accessory groups for dynamic category exemption
+SCREEN_PROTECTOR_TERMS: List[str] = [
+    "保護貼",
+    "玻璃貼",
+    "鋼化膜",
+    "保護膜",
+    "貼膜",
+    "鏡頭貼",
+    "フィルム",
+    "film",
+    "protector",
+]
+
+CASE_COVER_TERMS: List[str] = [
+    "保護殼",
+    "手機殼",
+    "保護套",
+    "防摔殼",
+    "清水套",
+    "果凍套",
+    "矽膠套",
+    "ケース",
+    "カバー",
+    "case",
+    "cover",
+]
+
+
+def get_shopee_active_blacklist(keyword: str) -> List[str]:
+    """
+    Generate dynamic active blacklist for Shopee.
+    - If user explicitly searches for screen protectors (e.g. '保護貼'), exempt screen protector terms.
+    - If user explicitly searches for cases (e.g. '保護殼', '手機殼'), exempt case/cover terms.
+    - Retains empty box / junk / parts filtering unless explicitly requested.
+    """
+    if not keyword:
+        return list(SHOPEE_BASE_BLACKLIST)
+    kw_lower = keyword.lower()
+    exempt_set = set()
+
+    # Check screen protector group
+    if any(t.lower() in kw_lower for t in SCREEN_PROTECTOR_TERMS):
+        exempt_set.update(t.lower() for t in SCREEN_PROTECTOR_TERMS)
+
+    # Check case/cover group
+    if any(t.lower() in kw_lower for t in CASE_COVER_TERMS):
+        exempt_set.update(t.lower() for t in CASE_COVER_TERMS)
+
+    # Directly exempt any individual blacklist term present in keyword
+    for t in SHOPEE_BASE_BLACKLIST:
+        if t.lower() in kw_lower:
+            exempt_set.add(t.lower())
+
+    return [term for term in SHOPEE_BASE_BLACKLIST if term.lower() not in exempt_set]
+
 
 def get_active_blacklist(
     keyword: str,
@@ -82,8 +195,11 @@ def get_active_blacklist(
 ) -> List[str]:
     """
     Generate dynamic active blacklist by exempting any terms present in keyword (case-insensitive check).
-    ONLY add a term to the active_blacklist if that term is NOT present in the user's requested jp_keyword.
+    ONLY add a term to the active_blacklist if that term is NOT present in the user's requested keyword.
     """
+    if base_blacklist == SHOPEE_BASE_BLACKLIST:
+        return get_shopee_active_blacklist(keyword)
+
     blacklist = base_blacklist if base_blacklist is not None else BASE_BLACKLIST
     if not keyword:
         return list(blacklist)
@@ -314,6 +430,253 @@ async def call_mercari_scraper_api(
     return int(round(twd))
 
 
+async def fetch_shopee_api_price(
+    keyword: str,
+    timeout_seconds: float = 8.0,
+    session: Optional[aiohttp.ClientSession] = None,
+    client: Optional[Any] = None,
+    estimated_min_usd: Optional[int] = None,
+    enable_mock: bool = False,
+) -> Optional[int]:
+    """
+    Perform async GET request to Shopee search API on RapidAPI:
+    1. Environment & Credentials:
+       - Strictly reads RAPIDAPI_KEY_SHOPEE and RAPIDAPI_HOST_SHOPEE via os.getenv().
+       - Headers:
+           x-rapidapi-host: RAPIDAPI_HOST_SHOPEE
+           x-rapidapi-key: RAPIDAPI_KEY_SHOPEE
+    2. Data Parsing & Smart Filtering:
+       - Parse returned JSON response across common schemas (items, data, listings, products, results).
+       - Dynamic Exemption: Exempt accessory terms if explicitly searched for, while keeping empty boxes/parts blocked.
+       - Discard items matching active title blacklist (filtering out cheap cases, screen protectors, etc.).
+       - Statistical Median Filter: Discard prices < Median * 0.4.
+       - Optional dynamic LLM threshold: item_price_twd >= (estimated_min_usd * 32.5 * 0.6).
+       - Find minimum valid price from surviving items.
+    3. Currency & Fallback:
+       - Returned as an integer in TWD.
+       - If API times out (HTTP 408/504 / asyncio.TimeoutError), hits rate limit (HTTP 429),
+         or finds no valid items, gracefully catches error, logs warning, and returns None.
+    """
+    clean_kw = keyword.strip()
+    if not clean_kw:
+        return None
+
+    api_key = (
+        os.getenv("RAPIDAPI_KEY_SHOPEE")
+        if os.getenv("RAPIDAPI_KEY_SHOPEE") is not None
+        else RAPIDAPI_KEY_SHOPEE
+    )
+    api_host = (
+        os.getenv("RAPIDAPI_HOST_SHOPEE")
+        if os.getenv("RAPIDAPI_HOST_SHOPEE") is not None
+        else (RAPIDAPI_HOST_SHOPEE or "shopee-api.p.rapidapi.com")
+    ).strip()
+
+    if client is None and is_placeholder_key(api_key):
+        if enable_mock:
+            mock_p = get_mock_plausible_price("shopee", clean_kw)
+            logger.debug(f"🧪 [Mock Price Fetcher] Generated mock price for Shopee '{clean_kw}': NT${mock_p}")
+            return mock_p
+        logger.warning("⚠️ [Shopee API] No RapidAPI Shopee key configured in environment.")
+        return None
+
+    url = (
+        os.getenv("SHOPEE_API_URL")
+        or getattr(settings, "shopee_api_url", None)
+        or f"https://{api_host}/search"
+    )
+    headers = {
+        "Accept": "application/json",
+        "x-rapidapi-host": api_host,
+        "x-rapidapi-key": api_key,
+    }
+    params = {
+        "keyword": clean_kw,
+        "q": clean_kw,
+        "site": "tw",
+    }
+
+    timeout_config = aiohttp.ClientTimeout(
+        total=timeout_seconds,
+        connect=min(timeout_seconds, 1.2),
+    )
+
+    status_code = 200
+    text = ""
+
+    try:
+        if client is not None:
+            resp = await client.get(url, headers=headers, params=params, timeout=timeout_seconds)
+            status_code = getattr(resp, "status_code", getattr(resp, "status", 200))
+            text = resp.text if isinstance(resp.text, str) else await resp.text()
+        else:
+            close_session = False
+            if session is None or session.closed:
+                session = aiohttp.ClientSession(trust_env=False)
+                close_session = True
+            try:
+                async with session.get(url, headers=headers, params=params, timeout=timeout_config) as resp:
+                    status_code = resp.status
+                    text = await resp.text()
+            finally:
+                if close_session:
+                    await session.close()
+    except asyncio.TimeoutError:
+        logger.warning(f"⚠️ [Timeout] Shopee RapidAPI request exceeded limit ({timeout_seconds}s).")
+        return None
+    except (aiohttp.ClientError, Exception) as exc:
+        logger.warning(f"⚠️ [Shopee API Request Failed] {exc}. Returning None for UI fallback.")
+        return None
+
+    # Rate Limit Interception (HTTP 429)
+    if status_code == 429:
+        logger.warning("🛑 [Rate Limit Intercepted] Shopee RapidAPI rate limit exceeded (HTTP 429). Returning None for UI fallback.")
+        return None
+
+    # Timeout Interception (HTTP 408 / 504)
+    if status_code in (408, 504):
+        logger.warning(f"⚠️ [Timeout Intercepted] Shopee RapidAPI timeout (HTTP {status_code}). Returning None for UI fallback.")
+        return None
+
+    # Other HTTP Failures
+    if status_code != 200:
+        logger.warning(f"⚠️ [Shopee API Failed] Shopee RapidAPI returned HTTP {status_code}: {text[:100]}. Returning None for UI fallback.")
+        return None
+
+    try:
+        data = json.loads(text)
+    except Exception as exc:
+        logger.warning(f"⚠️ [Shopee API Failed] Failed to parse Shopee response JSON: {exc}")
+        return None
+
+    # Check for rate limit indicators in payload
+    if isinstance(data, dict):
+        msg = str(data.get("message", "")).lower()
+        if "rate limit" in msg or "quota exceeded" in msg or "too many requests" in msg:
+            logger.warning(f"🛑 [Rate Limit Intercepted] Shopee API quota exceeded: {msg}")
+            return None
+
+    # Extract listings array
+    listings = []
+    if isinstance(data, dict):
+        if "items" in data and isinstance(data["items"], list):
+            listings = data["items"]
+        elif "data" in data:
+            if isinstance(data["data"], list):
+                listings = data["data"]
+            elif isinstance(data["data"], dict):
+                listings = (
+                    data["data"].get("items")
+                    or data["data"].get("products")
+                    or data["data"].get("listings")
+                    or []
+                )
+        elif "listings" in data and isinstance(data["listings"], list):
+            listings = data["listings"]
+        elif "products" in data and isinstance(data["products"], list):
+            listings = data["products"]
+        elif "results" in data and isinstance(data["results"], list):
+            listings = data["results"]
+    elif isinstance(data, list):
+        listings = data
+
+    logger.info(f"📊 [Shopee Listings] Total items fetched: {len(listings)}")
+    if not listings:
+        logger.warning("⚠️ [Filter Empty] No listings found in Shopee API response.")
+        return None
+
+    # 1. Dynamic Active Blacklist: Exempt terms present in clean_kw (case-insensitive)
+    active_blacklist = get_shopee_active_blacklist(clean_kw)
+    logger.info(
+        f"🛡️ [Shopee Active Blacklist] Keyword: '{clean_kw}', "
+        f"Active terms count: {len(active_blacklist)}"
+    )
+
+    # 2. Semantic Title Filtering & TWD Price Extraction
+    surviving_prices_twd: List[float] = []
+    for it in listings:
+        if isinstance(it, dict):
+            title = str(
+                it.get("title")
+                or it.get("name")
+                or it.get("item_name")
+                or (it.get("item_basic", {}).get("name") if isinstance(it.get("item_basic"), dict) else "")
+                or ""
+            ).strip()
+            title_lower = title.lower()
+
+            # Discard if title contains any term in active_blacklist (case-insensitive check)
+            if any(term.lower() in title_lower for term in active_blacklist):
+                logger.debug(f"🚫 [Shopee Blacklist Discarded] '{title}' matched active blacklist")
+                continue
+
+            raw_p = (
+                it.get("price")
+                or it.get("current_price")
+                or it.get("extracted_price")
+                or it.get("price_min")
+                or (it.get("item_basic", {}).get("price") if isinstance(it.get("item_basic"), dict) else None)
+            )
+            if raw_p is not None:
+                try:
+                    clean_str = (
+                        str(raw_p)
+                        .replace("NT$", "")
+                        .replace("NT", "")
+                        .replace("$", "")
+                        .replace("¥", "")
+                        .replace("円", "")
+                        .replace(",", "")
+                        .strip()
+                    )
+                    val = float(clean_str)
+                    # Handle raw Shopee micro-units if val > 1_000_000 (e.g. 150000000 -> 1500)
+                    if val > 1_000_000:
+                        val = val / 100_000.0
+                    if val > 0:
+                        surviving_prices_twd.append(val)
+                except (ValueError, TypeError):
+                    continue
+        elif isinstance(it, (int, float)) and it > 0:
+            surviving_prices_twd.append(float(it))
+
+    logger.info(f"💰 [Shopee Raw Prices (TWD)] Surviving prices after title filter: {surviving_prices_twd}")
+
+    # If no listings survived semantic filter, return None
+    if not surviving_prices_twd:
+        logger.warning("⚠️ [Filter Empty] No Shopee items survived semantic title blacklist.")
+        return None
+
+    # 3. Statistical Median Filter: Discard prices < Median * 0.4
+    med_price = statistics.median(surviving_prices_twd)
+    median_cutoff = med_price * 0.4
+    logger.info(f"📊 [Shopee Median Filter] Median TWD: {med_price:.2f}, Cutoff (0.4x): {median_cutoff:.2f}")
+
+    # 4. Dynamic LLM threshold: item_price_twd >= (estimated_min_usd * 32.5 * 0.6)
+    llm_threshold_twd = (
+        (estimated_min_usd * 32.5 * 0.6)
+        if (estimated_min_usd is not None and estimated_min_usd > 0)
+        else 0.0
+    )
+
+    # 5. Apply filters: discard prices < Median * 0.4 and < llm_threshold_twd
+    filtered_prices = [
+        p for p in surviving_prices_twd
+        if p >= median_cutoff and p >= llm_threshold_twd
+    ]
+
+    # If the filtered list is empty, return None
+    if not filtered_prices:
+        logger.warning(
+            f"⚠️ [Filter Empty] All Shopee items were below cutoffs (Median*0.4={median_cutoff:.2f} TWD, LLM threshold={llm_threshold_twd:.2f} TWD) and filtered out."
+        )
+        return None
+
+    # 6. Minimum valid price from surviving items (returned as an integer in TWD)
+    min_price_twd = min(filtered_prices)
+    return int(round(min_price_twd))
+
+
 async def call_third_party_api(
     platform: str,
     keyword: str,
@@ -328,6 +691,16 @@ async def call_third_party_api(
     """
     plat = platform.lower().strip()
     clean_kw = keyword.strip()
+
+    # Route Shopee requests to dedicated fetch_shopee_api_price
+    if plat in ("shopee", "shopee_tw"):
+        return await fetch_shopee_api_price(
+            keyword=clean_kw,
+            timeout_seconds=timeout_seconds,
+            session=session,
+            client=client,
+            estimated_min_usd=estimated_min_usd,
+        )
 
     # Route Mercari requests to dedicated POST scraper API
     if plat in ("mercari", "mercari_jp", "buyee"):
@@ -451,8 +824,38 @@ async def fetch_price(
 
     clean_kw = keyword.strip()
     plat = platform.lower().strip()
+    # Route Shopee platform requests directly to fetch_shopee_api_price
+    if plat in ("shopee", "shopee_tw"):
+        shopee_api_key = (
+            os.getenv("RAPIDAPI_KEY_SHOPEE")
+            if os.getenv("RAPIDAPI_KEY_SHOPEE") is not None
+            else RAPIDAPI_KEY_SHOPEE
+        )
+        has_shopee_key = not is_placeholder_key(shopee_api_key) or client is not None
+        if has_shopee_key:
+            try:
+                logger.info(f"🌐 [Shopee API] Fetching price for {plat}: '{clean_kw}'")
+                price = await fetch_shopee_api_price(
+                    keyword=clean_kw,
+                    timeout_seconds=timeout_seconds,
+                    session=session,
+                    client=client,
+                    estimated_min_usd=estimated_min_usd,
+                    enable_mock=False,
+                )
+                if price is not None and price > 0:
+                    return price
+                return None
+            except Exception as exc:
+                logger.warning(f"⚠️ [Shopee Fetcher Failed] {exc}. Returning None for UI fallback.")
+                return None
+        elif enable_mock:
+            mock_price = get_mock_plausible_price(plat, clean_kw)
+            logger.debug(f"🧪 [Mock Price Fetcher] Generated mock price for {plat} '{clean_kw}': NT${mock_price}")
+            return mock_price
+        return None
 
-    # Determine whether third-party API is configured
+    # Determine whether third-party API is configured for other platforms
     has_api_key = not is_placeholder_key(RAPIDAPI_KEY) or not is_placeholder_key(SERPAPI_KEY) or client is not None
 
     if has_api_key:
