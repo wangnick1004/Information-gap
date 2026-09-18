@@ -475,7 +475,12 @@ async def handle_line_events(events: list, access_token: str) -> None:
                 tw_task = search_taiwanese_platforms(effective_keyword)
                 cn_task = search_chinese_platforms(effective_keyword)
                 rakuten_task = fetch_rakuten_min_price(effective_jp_keyword, timeout_seconds=8.0)
-                mercari_task = fetch_mercari_api_price(effective_jp_keyword, timeout_seconds=8.0, enable_mock=False)
+                mercari_task = fetch_mercari_api_price(
+                    effective_jp_keyword,
+                    timeout_seconds=8.0,
+                    enable_mock=False,
+                    estimated_min_usd=parsed_item.estimated_min_usd if parsed_item else None,
+                )
                 results = await asyncio.gather(
                     jp_task, tw_task, cn_task, rakuten_task, mercari_task,
                     return_exceptions=True,
@@ -597,7 +602,12 @@ async def handle_line_events(events: list, access_token: str) -> None:
                         if need_rakuten and need_mercari:
                             r_fb, m_fb = await asyncio.gather(
                                 fetch_rakuten_min_price(kw_jp, timeout_seconds=8.0),
-                                fetch_mercari_api_price(kw_jp, timeout_seconds=8.0, enable_mock=False),
+                                fetch_mercari_api_price(
+                                    kw_jp,
+                                    timeout_seconds=8.0,
+                                    enable_mock=False,
+                                    estimated_min_usd=parsed_item.estimated_min_usd if parsed_item else None,
+                                ),
                                 return_exceptions=True,
                             )
                             rakuten_fallback_price = r_fb if (isinstance(r_fb, int) and r_fb > 0) else None
@@ -606,7 +616,12 @@ async def handle_line_events(events: list, access_token: str) -> None:
                             r_fb = await fetch_rakuten_min_price(kw_jp, timeout_seconds=8.0)
                             rakuten_fallback_price = r_fb if (isinstance(r_fb, int) and r_fb > 0) else None
                         elif need_mercari:
-                            m_fb = await fetch_mercari_api_price(kw_jp, timeout_seconds=8.0, enable_mock=False)
+                            m_fb = await fetch_mercari_api_price(
+                                kw_jp,
+                                timeout_seconds=8.0,
+                                enable_mock=False,
+                                estimated_min_usd=parsed_item.estimated_min_usd if parsed_item else None,
+                            )
                             mercari_fallback_price = m_fb if (isinstance(m_fb, int) and m_fb > 0) else None
                     except Exception:
                         pass

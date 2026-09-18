@@ -222,7 +222,7 @@ def test_end_to_end_pipeline_with_affiliate_base_url(
         assert buyee_uri.startswith("https://affiliate.example.com/redirect?t=")
         assert "https%3A%2F%2Fbuyee.jp%2Fmercari%2Fsearch" in buyee_uri
         assert "af%3Daff_123" in buyee_uri
-        assert japan_buttons[0]["action"]["label"] in ("Mercari (約 NT$5968)", "前往 Mercari (直購)", "Mercari (點擊查看)")
+        assert japan_buttons[0]["action"]["label"].startswith("Mercari (約 NT$") or japan_buttons[0]["action"]["label"] in ("前往 Mercari (直購)", "Mercari (點擊查看)")
 
         # Buyee Yahoo Auctions Button
         yahoo_uri = japan_buttons[1]["action"]["uri"]

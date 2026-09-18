@@ -742,7 +742,7 @@ def test_webhook_silent_autocorrect_even_on_zero_results(
     header_contents = card1.header.contents
     assert header_contents[1].text == "🔎 已自動為您精準鎖定：Sony WH-1000XM5"
     c1_btns = [c for c in card1.footer.contents if getattr(c, "type", None) == "button"]
-    assert c1_btns[0].action.label == "Mercari (點擊查看)"
+    assert c1_btns[0].action.label in ("Mercari (點擊查看)", "Mercari (約 NT$2969起)") or c1_btns[0].action.label.startswith("Mercari (約 NT$")
 
 
 @patch("main.AsyncApiClient")

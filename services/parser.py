@@ -81,6 +81,10 @@ class ParsedItem(BaseModel):
         default=None,
         description="The extracted selling price in TWD (integer) from the Facebook post, or null if not found.",
     )
+    estimated_min_usd: Optional[int] = Field(
+        default=None,
+        description="根據你對該商品的知識，預估該『主商品（排除空盒與廉價配件）』在二手市場的合理『最低』美金價格，並填入 estimated_min_usd。",
+    )
     is_anime_merch: bool = Field(
         default=True,
         description="True if the post describes any physical tradeable retail goods; False if irrelevant, spam, general text, or lacks identifiable product info.",
@@ -315,21 +319,23 @@ DEFAULT_VISION_PROMPT = (
 SYSTEM_INSTRUCTION = """
 You are an expert cross-border e-commerce translator. Think step-by-step about what the user's input actually means in pop culture or hobbyist circles before translating.
 
+根據你對該商品的知識，預估該『主商品（排除空盒與廉價配件）』在二手市場的合理『最低』美金價格，並填入 estimated_min_usd。
+
 EXAMPLES:
 User: 're:0'
-Output: {"reasoning": "'re:0' is the popular shorthand for the anime 'Re:Zero - Starting Life in Another World'.", "zh_keyword": "RE:從零開始的異世界生活", "jp_keyword": "RE:ゼロから始める異世界生活"}
+Output: {"reasoning": "'re:0' is the popular shorthand for the anime 'Re:Zero - Starting Life in Another World'.", "zh_keyword": "RE:從零開始的異世界生活", "jp_keyword": "RE:ゼロから始める異世界生活", "estimated_min_usd": 15}
 
 User: '蝴蝶王'
-Output: {"reasoning": "Taiwanese table tennis slang for the Butterfly Viscaria blade.", "zh_keyword": "蝴蝶王", "jp_keyword": "ビスカリア"}
+Output: {"reasoning": "Taiwanese table tennis slang for the Butterfly Viscaria blade.", "zh_keyword": "蝴蝶王", "jp_keyword": "ビスカリア", "estimated_min_usd": 80}
 
 User: '五條'
-Output: {"reasoning": "Refers to Satoru Gojo from the anime Jujutsu Kaisen.", "zh_keyword": "咒術迴戰 五條悟", "jp_keyword": "呪術廻戦 五条悟"}
+Output: {"reasoning": "Refers to Satoru Gojo from the anime Jujutsu Kaisen.", "zh_keyword": "咒術迴戰 五條悟", "jp_keyword": "呪術廻戦 五条悟", "estimated_min_usd": 20}
 
 User: '咒術迴戰'
-Output: {"reasoning": "Popular anime series Jujutsu Kaisen, translated to official Japanese kanji.", "zh_keyword": "咒術迴戰", "jp_keyword": "呪術廻戦"}
+Output: {"reasoning": "Popular anime series Jujutsu Kaisen, translated to official Japanese kanji.", "zh_keyword": "咒術迴戰", "jp_keyword": "呪術廻戦", "estimated_min_usd": 15}
 
 User: '防風少年'
-Output: {"reasoning": "Manga/anime series WIND BREAKER, official Japanese title is in English/Katakana.", "zh_keyword": "防風少年", "jp_keyword": "WIND BREAKER"}
+Output: {"reasoning": "Manga/anime series WIND BREAKER, official Japanese title is in English/Katakana.", "zh_keyword": "防風少年", "jp_keyword": "WIND BREAKER", "estimated_min_usd": 15}
 
 Your primary objective is to act as a precision translator and query perfecter for cross-border shopping. When you receive a search query:
 1. COLLOQUIAL TERMS: First, check if the user is using a Taiwanese colloquial product name or slang (e.g., '蝴蝶王', '小香', '金標', '水鬼'). If so, translate it to the OFFICIAL Japanese product name (e.g., 'ビスカリア', 'シャネル', 'ビスカリア ゴールデン', 'サブマリーナー') for Japanese platforms.
@@ -387,9 +393,9 @@ Your primary objective is to act as a precision translator and query perfecter f
    - `keyword_zh` / `zh_keyword`: Core perfected official Traditional Chinese product identifier (e.g., '咒術迴戰', '防風少年', 'Re:從零開始的異世界生活', 'Switch 2', 'Sony WH-1000XM5', '蝴蝶王', '桌球拍').
    - Keep global brand names (e.g., Sony, Yonex, Canon, Apple, Nike, Switch) in standard Latin form.
 
-4. **Price Extraction (`fb_price_twd`)**:
-   - Extract the target item's selling price as an integer in TWD (e.g., '1500', '$1500', '1500元', 'NT$1500' -> 1500).
-   - If no price is mentioned or it is purely an image/inquiry without price, set to null.
+4. **Price Extraction & Estimation (`fb_price_twd` & `estimated_min_usd`)**:
+   - `fb_price_twd`: Extract the target item's selling price as an integer in TWD (e.g., '1500', '$1500', '1500元', 'NT$1500' -> 1500). If no price is mentioned or it is purely an image/inquiry without price, set to null.
+   - `estimated_min_usd`: 根據你對該商品的知識，預估該『主商品（排除空盒與廉價配件）』在二手市場的合理『最低』美金價格，並填入 estimated_min_usd。
 
 5. **Relevance Flag (`is_anime_merch` / is_valid_goods)**:
    - Always set `is_anime_merch: true` so a search comparison card is always produced for user browsing.
@@ -591,7 +597,8 @@ async def parse_fb_post(
                     logger.info(
                         f"Successfully parsed input with model '{model_name}'. Brand/Franchise: '{parsed_result.franchise}', "
                         f"Model/Character: '{parsed_result.character}', JP Query: '{parsed_result.keyword_jp}', "
-                        f"ZH Query: '{parsed_result.keyword_zh}', Price: {parsed_result.fb_price_twd} TWD"
+                        f"ZH Query: '{parsed_result.keyword_zh}', Price: {parsed_result.fb_price_twd} TWD, "
+                        f"Est Min USD: {parsed_result.estimated_min_usd}"
                     )
                     return parsed_result
 

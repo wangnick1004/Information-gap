@@ -853,3 +853,54 @@ def test_fast_regex_parse_generic_terms_do_not_bypass():
     assert res_ps5.search_query_ja == "PS5"
 
 
+def test_parsed_item_estimated_min_usd_schema():
+    """Test that ParsedItem schema supports estimated_min_usd integer field."""
+    from services.parser import ParsedItem
+
+    # Default is None
+    item_default = ParsedItem(
+        franchise="Butterfly",
+        character="Viscaria",
+    )
+    assert item_default.estimated_min_usd is None
+
+    # Explicit integer value
+    item_with_est = ParsedItem(
+        franchise="Butterfly",
+        character="Viscaria",
+        estimated_min_usd=80,
+    )
+    assert item_with_est.estimated_min_usd == 80
+    data = item_with_est.model_dump()
+    assert data["estimated_min_usd"] == 80
+
+
+@pytest.mark.anyio
+async def test_parse_fb_post_with_estimated_min_usd():
+    """Test that parse_fb_post correctly parses estimated_min_usd from Gemini output."""
+    mock_chat = AsyncMock()
+    mock_response = MagicMock()
+    mock_response.text = json.dumps({
+        "reasoning": "Butterfly Viscaria blade table tennis equipment.",
+        "zh_keyword": "蝴蝶王",
+        "jp_keyword": "ビスカリア",
+        "franchise": "Butterfly",
+        "character": "Viscaria",
+        "item_type": "卓球ラケット",
+        "fb_price_twd": 3500,
+        "estimated_min_usd": 75,
+        "is_anime_merch": True,
+    })
+    mock_chat.send_message = AsyncMock(return_value=mock_response)
+
+    with patch("services.parser.genai.Client") as mock_client_cls:
+        mock_client = MagicMock()
+        mock_client.aio.chats.create.return_value = mock_chat
+        mock_client_cls.return_value = mock_client
+
+        result = await parse_fb_post("售 蝴蝶王 FL $3500", api_key="fake_key")
+        assert result.estimated_min_usd == 75
+        assert result.keyword_jp == "ビスカリア"
+        assert result.fb_price_twd == 3500
+
+

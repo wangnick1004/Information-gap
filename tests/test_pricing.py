@@ -164,3 +164,16 @@ def test_calculate_dynamic_platform_prices_overall_and_per_platform():
     assert result.avg_price is not None
     assert result.avg_price > result.min_price
 
+
+def test_convert_to_twd_usd():
+    """Test convert_to_twd with USD currency incorporating 1.5% overseas fee."""
+    from services.pricing import convert_to_twd
+
+    # Default USD rate 32.5: 100 * 32.5 * 1.015 = 3298.75
+    twd_default = convert_to_twd(100.0, currency="USD")
+    assert round(twd_default, 2) == 3298.75
+
+    # Custom USD rate 32.0: 50 * 32.0 * 1.015 = 1624.0
+    twd_custom = convert_to_twd(50.0, currency="USD", exchange_rate=32.0)
+    assert round(twd_custom, 2) == 1624.0
+

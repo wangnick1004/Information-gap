@@ -49,8 +49,8 @@ async def test_fashion_resale_mercari_platform_filter_and_params():
     mock_resp.status_code = 200
     mock_resp.text = json.dumps({
         "listings": [
-            {"title": "Butterfly Viscaria FL", "price": 18000, "platform": "mercari"},
-            {"title": "Butterfly Viscaria ST", "price": 20000, "platform": "mercari"},
+            {"title": "Butterfly Viscaria FL", "price": 80, "platform": "mercari"},
+            {"title": "Butterfly Viscaria ST", "price": 100, "platform": "mercari"},
         ]
     })
     mock_client.get = AsyncMock(return_value=mock_resp)
@@ -61,6 +61,7 @@ async def test_fashion_resale_mercari_platform_filter_and_params():
             jp_keyword="ビスカリア",
             timeout_seconds=8.0,
             client=mock_client,
+            estimated_min_usd=100,
         )
 
     # Verify GET request parameters and querystring
@@ -74,45 +75,46 @@ async def test_fashion_resale_mercari_platform_filter_and_params():
     assert called_kwargs["params"] == {"q": "ビスカリア", "platform": "mercari"}
 
     # Verify Currency Conversion:
-    # 18000 * 0.21 * 1.015 = 3836.7 -> 3837 TWD
-    assert twd_price == 3837
+    # 80 USD * 32.5 * 1.015 = 2639 TWD
+    assert twd_price == 2639
 
 
 @pytest.mark.anyio
-async def test_data_parsing_filters_under_2500_and_finds_minimum():
+async def test_data_parsing_dynamic_threshold_filters_accessories_and_finds_minimum():
     """
-    Test Step 2: Data Parsing & Filtering:
-    - Collects ALL valid numeric prices from the 'listings' array into a list
-    - Discards any price < 2500 JPY (edge tapes, rubber protectors, empty boxes)
-    - Finds the minimum price from the filtered list (e.g., 15000 from [500, 1200, 18000, 15000, 22000])
-    - Converts to TWD (15000 * 0.21 * 1.015 = 3197.25 -> 3197 TWD)
+    Test Step 2: Data Parsing & Dynamic Filtering:
+    - Collects ALL valid numeric USD prices from the 'listings' array into a list
+    - Filters out prices < (estimated_min_usd * 0.6) (edge tapes, rubber protectors, empty boxes)
+    - Finds the minimum price from the filtered list (e.g., 50 from [5, 12, 24, 70, 50, 85] with estimated_min_usd=60)
+    - Converts USD to TWD using standard rate (50 * 32.5 * 1.015 = 1649.375 -> 1649 TWD)
     """
     mock_client = AsyncMock()
     mock_resp = MagicMock()
     mock_resp.status_code = 200
     mock_resp.text = json.dumps({
         "listings": [
-            {"title": "Edge Tape", "price": "¥500"},           # < 2500 JPY discarded
-            {"title": "Rubber Protector", "price": 1200},      # < 2500 JPY discarded
-            {"title": "Empty Box", "price": "2,400"},          # < 2500 JPY discarded
-            {"title": "Viscaria Racket A", "price": "18,000"}, # valid
-            {"title": "Viscaria Racket B", "price": 15000},    # valid minimum!
-            {"title": "Viscaria Racket C", "price": "22,000"}, # valid
+            {"title": "Edge Tape", "price": "$5"},              # < 36 USD discarded
+            {"title": "Rubber Protector", "price": 12},         # < 36 USD discarded
+            {"title": "Empty Box", "price": "24"},              # < 36 USD discarded
+            {"title": "Viscaria Racket A", "price": "70"},      # >= 36 USD valid
+            {"title": "Viscaria Racket B", "price": 50},        # >= 36 USD valid minimum!
+            {"title": "Viscaria Racket C", "price": "85"},      # >= 36 USD valid
         ]
     })
     mock_client.get = AsyncMock(return_value=mock_resp)
 
     with patch.dict(os.environ, {"RAPIDAPI_KEY": "test_env_key"}):
-        # 15000 * 0.21 * 1.015 = 3197.25 -> 3197 TWD
-        price = await fetch_mercari_api_price("ビスカリア", client=mock_client)
-        assert price == 3197
+        # estimated_min_usd=60 -> threshold is 36 USD. Valid prices: 70, 50, 85 -> min is 50
+        # 50 * 32.5 * 1.015 = 1649.375 -> 1649 TWD
+        price = await fetch_mercari_api_price("ビスカリア", client=mock_client, estimated_min_usd=60)
+        assert price == 1649
 
 
 @pytest.mark.anyio
-async def test_data_parsing_all_under_2500_returns_none(caplog):
+async def test_data_parsing_all_below_dynamic_threshold_returns_none(caplog):
     """
-    Test that if all extracted items are under 2500 JPY, it returns None
-    and logs total items, raw prices, and the filter empty warning.
+    Test that if all extracted items are below (estimated_min_usd * 0.6), it returns None
+    and logs total items, raw prices, and the filter empty warning with threshold.
     """
     import logging
     mock_client = AsyncMock()
@@ -120,22 +122,23 @@ async def test_data_parsing_all_under_2500_returns_none(caplog):
     mock_resp.status_code = 200
     mock_resp.text = json.dumps({
         "listings": [
-            {"title": "Edge Tape", "price": 500},
-            {"title": "Rubber Protector", "price": 1200},
-            {"title": "Clean Sponge", "price": 800},
-            {"title": "Empty Box", "price": 2499},
+            {"title": "Edge Tape", "price": 5},
+            {"title": "Rubber Protector", "price": 12},
+            {"title": "Clean Sponge", "price": 8},
+            {"title": "Empty Box", "price": 24},
         ]
     })
     mock_client.get = AsyncMock(return_value=mock_resp)
 
     with caplog.at_level(logging.INFO):
         with patch.dict(os.environ, {"RAPIDAPI_KEY": "test_env_key"}):
-            price = await fetch_mercari_api_price("ビスカリア", client=mock_client)
+            # estimated_min_usd=60 -> threshold is 36 USD
+            price = await fetch_mercari_api_price("ビスカリア", client=mock_client, estimated_min_usd=60)
             assert price is None
 
     assert "📊 [Mercari Listings] Total items fetched: 4" in caplog.text
-    assert "💰 [Mercari Raw Prices] Extracted prices before filter: [500.0, 1200.0, 800.0, 2499.0]" in caplog.text
-    assert "⚠️ [Filter Empty] All Mercari items were < 2500 JPY and filtered out." in caplog.text
+    assert "💰 [Mercari Raw Prices (USD)] Extracted prices before filter: [5.0, 12.0, 8.0, 24.0]" in caplog.text
+    assert "⚠️ [Filter Empty] All Mercari items were below threshold (36.00 USD) and filtered out." in caplog.text
 
 
 @pytest.mark.anyio
@@ -317,11 +320,42 @@ async def test_fetch_price_mock_fallback():
 
 
 def test_default_timeout_signatures():
-    """Verify default timeout_seconds is 8.0 for fetch_mercari_api_price and fetch_price."""
+    """Verify default timeout_seconds is 8.0 and estimated_min_usd is supported for fetch_mercari_api_price and fetch_price."""
     import inspect
     sig_mercari = inspect.signature(fetch_mercari_api_price)
     assert sig_mercari.parameters["timeout_seconds"].default == 8.0
+    assert "estimated_min_usd" in sig_mercari.parameters
+    assert sig_mercari.parameters["estimated_min_usd"].default is None
 
     sig_fetch = inspect.signature(fetch_price)
     assert sig_fetch.parameters["timeout_seconds"].default == 8.0
+    assert "estimated_min_usd" in sig_fetch.parameters
+    assert sig_fetch.parameters["estimated_min_usd"].default is None
+
+
+@pytest.mark.anyio
+async def test_data_parsing_genuine_bargain_accepted():
+    """
+    Verify that genuine bargains (e.g. 40% margin allowance) are accepted
+    while cheaper accessories are killed:
+    - estimated_min_usd = 100 -> threshold = 100 * 0.6 = 60 USD
+    - item at $65 USD (genuine super-bargain) >= $60 -> ACCEPTED
+    - item at $25 USD (cheap accessory/case) < $60 -> KILLED
+    - 65 * 32.5 * 1.015 = 2144.1875 -> 2144 TWD
+    """
+    mock_client = AsyncMock()
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.text = json.dumps({
+        "listings": [
+            {"title": "Cheap Case/Accessory", "price": 25},
+            {"title": "Genuine Super-Bargain Main Item", "price": 65},
+            {"title": "Regular Price Item", "price": 110},
+        ]
+    })
+    mock_client.get = AsyncMock(return_value=mock_resp)
+
+    with patch.dict(os.environ, {"RAPIDAPI_KEY": "test_env_key"}):
+        price = await fetch_mercari_api_price("ビスカリア", client=mock_client, estimated_min_usd=100)
+        assert price == 2144
 

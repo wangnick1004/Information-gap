@@ -122,6 +122,9 @@ def convert_to_twd(
     elif curr in ("CNY", "RMB"):
         rate = exchange_rate if exchange_rate is not None else getattr(settings, "default_exchange_rate_cny_twd", 4.5)
         return price * rate * (1.0 + overseas_fee_rate)
+    elif curr == "USD":
+        rate = exchange_rate if exchange_rate is not None else getattr(settings, "default_exchange_rate_usd_twd", 32.5)
+        return price * rate * (1.0 + overseas_fee_rate)
     elif curr in ("TWD", "NTD"):
         return float(price)
     else:

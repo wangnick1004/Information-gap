@@ -107,9 +107,9 @@ async def call_mercari_scraper_api(
     timeout_seconds: float = 8.0,
     session: Optional[aiohttp.ClientSession] = None,
     client: Optional[Any] = None,
-    exchange_rate: float = 0.21,
+    exchange_rate: float = 32.5,
     overseas_fee_rate: float = 0.015,
-    min_valid_jpy: float = 2500.0,
+    estimated_min_usd: Optional[int] = None,
 ) -> Optional[int]:
     """
     Perform async GET request to Fashion Resale API on RapidAPI:
@@ -119,14 +119,16 @@ async def call_mercari_scraper_api(
        - Headers:
            x-rapidapi-host: fashion-resale-api.p.rapidapi.com
            x-rapidapi-key: os.getenv("RAPIDAPI_KEY")
-    2. Data Parsing & Filtering:
+    2. Data Parsing & Dynamic Filtering:
        - Parse returned JSON response.
-       - Collect ALL valid numeric prices from the 'listings' array into a list.
-       - Filter out any price < 2500 JPY (discarding accessories, edge tapes, protectors, empty boxes).
+       - Extract all valid numeric prices from the 'listings' array treated as USD.
+       - Filter out any accessory/noise price:
+         if item_price_usd >= (estimated_min_usd * 0.6):
+         (allows 40% margin for genuine super-bargains while killing cheap accessories).
        - If filtered list is empty, return None.
        - Find the minimum price from this filtered list.
-    3. Currency Conversion:
-       - Convert this valid minimum price to TWD (JPY * 0.21 + 1.5% overseas credit card fee).
+    3. Currency Normalization:
+       - Convert this valid minimum USD price to TWD (USD * 32.5 * 1.015) before returning to UI.
     """
     clean_kw = jp_keyword.strip()
     if not clean_kw:
@@ -197,8 +199,8 @@ async def call_mercari_scraper_api(
 
     logger.info(f"📊 [Mercari Listings] Total items fetched: {len(listings)}")
 
-    # 1. Collect ALL valid numeric prices from the listings array into a list
-    collected_prices: List[float] = []
+    # 1. Collect ALL valid numeric prices from the listings array into a list of USD prices
+    collected_prices_usd: List[float] = []
     for it in listings:
         if isinstance(it, dict):
             raw_p = it.get("price") or it.get("current_price") or it.get("extracted_price")
@@ -215,29 +217,36 @@ async def call_mercari_scraper_api(
                     )
                     val = float(clean_str)
                     if val > 0:
-                        collected_prices.append(val)
+                        collected_prices_usd.append(val)
                 except (ValueError, TypeError):
                     continue
         elif isinstance(it, (int, float)) and it > 0:
-            collected_prices.append(float(it))
+            collected_prices_usd.append(float(it))
 
-    logger.info(f"💰 [Mercari Raw Prices] Extracted prices before filter: {collected_prices}")
+    logger.info(f"💰 [Mercari Raw Prices (USD)] Extracted prices before filter: {collected_prices_usd}")
 
-    # 2. Apply a filter: discard any price < 2500 JPY (edge tapes, rubber protectors, empty boxes)
-    filtered_prices = [p for p in collected_prices if p >= min_valid_jpy]
+    # 2. Dynamic threshold calculation: item_price_usd >= (estimated_min_usd * 0.6)
+    min_threshold_usd = (
+        (estimated_min_usd * 0.6)
+        if (estimated_min_usd is not None and estimated_min_usd > 0)
+        else 0.0
+    )
+    filtered_prices = [p for p in collected_prices_usd if p >= min_threshold_usd]
 
     # 3. If the filtered list is empty, return None
     if not filtered_prices:
-        logger.warning(f"⚠️ [Filter Empty] All Mercari items were < 2500 JPY and filtered out.")
+        logger.warning(
+            f"⚠️ [Filter Empty] All Mercari items were below threshold ({min_threshold_usd:.2f} USD) and filtered out."
+        )
         return None
 
     # 4. If there are valid prices, find the minimum price from this filtered list
-    min_price_jpy = min(filtered_prices)
+    min_price_usd = min(filtered_prices)
 
-    # 5. Convert this valid minimum price to TWD and return it
+    # 5. Currency Normalization: Convert valid minimum USD price to TWD
     twd = convert_to_twd(
-        min_price_jpy,
-        currency="JPY",
+        min_price_usd,
+        currency="USD",
         exchange_rate=exchange_rate,
         overseas_fee_rate=overseas_fee_rate,
     )
@@ -250,6 +259,7 @@ async def call_third_party_api(
     timeout_seconds: float = 8.0,
     session: Optional[aiohttp.ClientSession] = None,
     client: Optional[Any] = None,
+    estimated_min_usd: Optional[int] = None,
 ) -> Optional[int]:
     """
     Dispatch request to third-party API provider (RapidAPI or SerpApi).
@@ -265,6 +275,7 @@ async def call_third_party_api(
             timeout_seconds=timeout_seconds,
             session=session,
             client=client,
+            estimated_min_usd=estimated_min_usd,
         )
 
     headers = {
@@ -348,6 +359,7 @@ async def fetch_price(
     enable_mock: bool = True,
     session: Optional[aiohttp.ClientSession] = None,
     client: Optional[Any] = None,
+    estimated_min_usd: Optional[int] = None,
 ) -> Optional[int]:
     """
     Asynchronous function to fetch price in TWD for a specified platform and keyword.
@@ -368,6 +380,7 @@ async def fetch_price(
         enable_mock: Whether to return plausible mock price when no API key is set (default True).
         session: Optional pre-configured aiohttp.ClientSession.
         client: Optional pre-configured mock client.
+        estimated_min_usd: Optional LLM-estimated minimum USD price threshold for filtering.
 
     Returns:
         Optional[int]: Calculated or mock price in TWD, or None on failure/rate-limit.
@@ -390,6 +403,7 @@ async def fetch_price(
                 timeout_seconds=timeout_seconds,
                 session=session,
                 client=client,
+                estimated_min_usd=estimated_min_usd,
             )
             if price is not None and price > 0:
                 return price
@@ -420,6 +434,7 @@ async def fetch_mercari_api_price(
     session: Optional[aiohttp.ClientSession] = None,
     client: Optional[Any] = None,
     enable_mock: bool = False,
+    estimated_min_usd: Optional[int] = None,
 ) -> Optional[int]:
     """
     Fetch real Mercari min price in TWD via RapidAPI POST endpoint with strict 8.0s timeout.
@@ -432,6 +447,7 @@ async def fetch_mercari_api_price(
         enable_mock=enable_mock,
         session=session,
         client=client,
+        estimated_min_usd=estimated_min_usd,
     )
 
 
