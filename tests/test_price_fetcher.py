@@ -137,8 +137,8 @@ async def test_data_parsing_all_below_dynamic_threshold_returns_none(caplog):
             assert price is None
 
     assert "📊 [Mercari Listings] Total items fetched: 4" in caplog.text
-    assert "💰 [Mercari Raw Prices (USD)] Extracted prices before filter: [5.0, 12.0, 8.0, 24.0]" in caplog.text
-    assert "⚠️ [Filter Empty] All Mercari items were below threshold (36.00 USD) and filtered out." in caplog.text
+    assert "💰 [Mercari Raw Prices (USD)] Surviving prices after title filter: [5.0, 12.0, 8.0, 24.0]" in caplog.text
+    assert "⚠️ [Filter Empty] All Mercari items were below cutoffs" in caplog.text
 
 
 @pytest.mark.anyio
@@ -358,4 +358,106 @@ async def test_data_parsing_genuine_bargain_accepted():
     with patch.dict(os.environ, {"RAPIDAPI_KEY": "test_env_key"}):
         price = await fetch_mercari_api_price("ビスカリア", client=mock_client, estimated_min_usd=100)
         assert price == 2144
+
+
+def test_base_blacklist_definition():
+    """Verify BASE_BLACKLIST contains exact specified keywords."""
+    from services.price_fetcher import BASE_BLACKLIST
+    expected = ["ケース", "カバー", "フィルム", "空箱", "ジャンク", "保護", "パーツ", "部品", "用", "box only"]
+    assert BASE_BLACKLIST == expected
+
+
+def test_get_active_blacklist_exemption_mechanism():
+    """Test dynamic active blacklist properly exempts terms present in jp_keyword (case-insensitive)."""
+    from services.price_fetcher import BASE_BLACKLIST, get_active_blacklist
+
+    # 1. No blacklist word in keyword -> full blacklist active
+    active1 = get_active_blacklist("Nintendo Switch 本体")
+    assert active1 == BASE_BLACKLIST
+
+    # 2. "ケース" in keyword -> "ケース" exempted, 9 terms remain
+    active2 = get_active_blacklist("Switch ケース")
+    assert "ケース" not in active2
+    assert "カバー" in active2
+    assert len(active2) == len(BASE_BLACKLIST) - 1
+
+    # 3. Case-insensitive check: "BOX ONLY" in keyword -> "box only" exempted
+    active3 = get_active_blacklist("Pokemon Card BOX ONLY")
+    assert "box only" not in active3
+    assert len(active3) == len(BASE_BLACKLIST) - 1
+
+    # 4. Multiple terms: "Switch用 ケース" -> both "用" and "ケース" exempted
+    active4 = get_active_blacklist("Switch用 ケース")
+    assert "ケース" not in active4
+    assert "用" not in active4
+    assert "カバー" in active4
+    assert len(active4) == len(BASE_BLACKLIST) - 2
+
+
+@pytest.mark.anyio
+async def test_semantic_title_filter_and_dynamic_exemption():
+    """
+    Test Semantic Filter on listings:
+    1. When searching "Switch" (no accessory keywords):
+       - "Nintendo Switch 本体" ($200) -> SURVIVES
+       - "Switch ケース" ($15) -> KILLED by active blacklist term 'ケース'
+       - "Switch 空箱" ($5) -> KILLED by active blacklist term '空箱'
+       - "Switch ジャンク品" ($30) -> KILLED by active blacklist term 'ジャンク'
+       - "Switch用 グリップ" ($10) -> KILLED by active blacklist term '用'
+       - "Switch box only" ($8) -> KILLED by active blacklist term 'box only'
+    2. Minimum price is $200 -> 200 * 32.5 * 1.015 = 6597.5 -> 6598 TWD
+    """
+    mock_client = AsyncMock()
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.text = json.dumps({
+        "listings": [
+            {"title": "Switch ケース", "price": 15},
+            {"title": "Switch 空箱", "price": 5},
+            {"title": "Switch ジャンク品", "price": 30},
+            {"title": "Switch用 グリップ", "price": 10},
+            {"title": "Switch box only", "price": 8},
+            {"title": "Nintendo Switch 本体", "price": 200},
+            {"title": "Nintendo Switch 有機EL 本体", "price": 260},
+        ]
+    })
+    mock_client.get = AsyncMock(return_value=mock_resp)
+
+    with patch.dict(os.environ, {"RAPIDAPI_KEY": "test_env_key"}):
+        price = await fetch_mercari_api_price("Switch", client=mock_client)
+        assert price in (6597, 6598)
+
+
+@pytest.mark.anyio
+async def test_dynamic_exemption_and_median_filter_on_accessories():
+    """
+    Test that when searching explicitly for an accessory:
+    - The accessory term ("ケース") is exempted from active blacklist
+    - Still eliminates non-exempt blacklist items (e.g. "空箱" for the case)
+    - Statistical Median Filter (discarding < Median * 0.4) catches extreme low-value outliers (e.g. $1 wrap)
+    - Valid minimum case ($15) survives and is converted to TWD
+    """
+    mock_client = AsyncMock()
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.text = json.dumps({
+        "listings": [
+            {"title": "Switch ケース 空箱", "price": 2},            # KILLED by active blacklist "空箱"
+            {"title": "Switch ケース ジャンク", "price": 3},          # KILLED by active blacklist "ジャンク"
+            {"title": "Switch キャリングケース 薄型", "price": 1.0},   # Survives title filter, but KILLED by Median * 0.4
+            {"title": "Switch ケース 耐衝撃", "price": 15.0},         # Survives!
+            {"title": "Switch ケース ハードタイプ", "price": 16.0},     # Survives!
+            {"title": "Switch ケース 高級レザー", "price": 20.0},      # Survives!
+        ]
+    })
+    mock_client.get = AsyncMock(return_value=mock_resp)
+
+    # Median of surviving [1.0, 15.0, 16.0, 20.0] is (15.0 + 16.0) / 2 = 15.5
+    # Cutoff (0.4x) is 15.5 * 0.4 = 6.2 USD
+    # $1.0 is discarded (< 6.2)
+    # Remaining valid prices: [15.0, 16.0, 20.0] -> minimum is 15.0 USD
+    # 15.0 * 32.5 * 1.015 = 494.8125 -> 495 TWD
+    with patch.dict(os.environ, {"RAPIDAPI_KEY": "test_env_key"}):
+        price = await fetch_mercari_api_price("Switch ケース", client=mock_client)
+        assert price == 495
 

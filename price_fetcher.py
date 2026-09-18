@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import random
+import statistics
 import sys
 import urllib.parse
 from typing import Any, Dict, List, Optional, Union
@@ -59,6 +60,35 @@ THIRD_PARTY_API_TOKEN: str = (
 # RapidAPI Marketplace Hosts
 RAPIDAPI_HOST_RAKUTEN: str = os.getenv("RAPIDAPI_HOST_RAKUTEN", "rakuten-item-search.p.rapidapi.com")
 SERPAPI_BASE_URL: str = os.getenv("SERPAPI_BASE_URL", "https://serpapi.com/search.json")
+
+# Base Blacklist Definition for Title Filtering
+BASE_BLACKLIST: List[str] = [
+    "ケース",
+    "カバー",
+    "フィルム",
+    "空箱",
+    "ジャンク",
+    "保護",
+    "パーツ",
+    "部品",
+    "用",
+    "box only",
+]
+
+
+def get_active_blacklist(
+    keyword: str,
+    base_blacklist: Optional[List[str]] = None,
+) -> List[str]:
+    """
+    Generate dynamic active blacklist by exempting any terms present in keyword (case-insensitive check).
+    ONLY add a term to the active_blacklist if that term is NOT present in the user's requested jp_keyword.
+    """
+    blacklist = base_blacklist if base_blacklist is not None else BASE_BLACKLIST
+    if not keyword:
+        return list(blacklist)
+    kw_lower = keyword.lower()
+    return [term for term in blacklist if term.lower() not in kw_lower]
 
 
 class ThirdPartyAPIError(Exception):
@@ -199,10 +229,26 @@ async def call_mercari_scraper_api(
 
     logger.info(f"📊 [Mercari Listings] Total items fetched: {len(listings)}")
 
-    # 1. Collect ALL valid numeric prices from the listings array into a list of USD prices
-    collected_prices_usd: List[float] = []
+    # 1. Dynamic Active Blacklist: Exempt terms present in clean_kw (case-insensitive)
+    active_blacklist = get_active_blacklist(clean_kw)
+    logger.info(
+        f"🛡️ [Active Blacklist] Keyword: '{clean_kw}', "
+        f"Active: {active_blacklist}, "
+        f"Exempted: {[t for t in BASE_BLACKLIST if t.lower() in clean_kw.lower()]}"
+    )
+
+    # 2. Semantic Title Filtering & USD Price Extraction
+    surviving_prices_usd: List[float] = []
     for it in listings:
         if isinstance(it, dict):
+            title = str(it.get("title") or it.get("name") or it.get("item_name") or "").strip()
+            title_lower = title.lower()
+
+            # Discard if title contains any term in active_blacklist (case-insensitive check)
+            if any(term.lower() in title_lower for term in active_blacklist):
+                logger.debug(f"🚫 [Blacklist Discarded] '{title}' matched active blacklist")
+                continue
+
             raw_p = it.get("price") or it.get("current_price") or it.get("extracted_price")
             if raw_p is not None:
                 try:
@@ -217,33 +263,48 @@ async def call_mercari_scraper_api(
                     )
                     val = float(clean_str)
                     if val > 0:
-                        collected_prices_usd.append(val)
+                        surviving_prices_usd.append(val)
                 except (ValueError, TypeError):
                     continue
         elif isinstance(it, (int, float)) and it > 0:
-            collected_prices_usd.append(float(it))
+            surviving_prices_usd.append(float(it))
 
-    logger.info(f"💰 [Mercari Raw Prices (USD)] Extracted prices before filter: {collected_prices_usd}")
+    logger.info(f"💰 [Mercari Raw Prices (USD)] Surviving prices after title filter: {surviving_prices_usd}")
 
-    # 2. Dynamic threshold calculation: item_price_usd >= (estimated_min_usd * 0.6)
-    min_threshold_usd = (
+    # If no listings survived semantic filter, return None
+    if not surviving_prices_usd:
+        logger.warning("⚠️ [Filter Empty] No Mercari items survived semantic title blacklist.")
+        return None
+
+    # 3. Statistical Median Filter: Discard prices < Median * 0.4
+    med_price = statistics.median(surviving_prices_usd)
+    median_cutoff = med_price * 0.4
+    logger.info(f"📊 [Median Filter] Median USD: {med_price:.2f}, Cutoff (0.4x): {median_cutoff:.2f}")
+
+    # 4. Dynamic LLM threshold: item_price_usd >= (estimated_min_usd * 0.6)
+    llm_threshold_usd = (
         (estimated_min_usd * 0.6)
         if (estimated_min_usd is not None and estimated_min_usd > 0)
         else 0.0
     )
-    filtered_prices = [p for p in collected_prices_usd if p >= min_threshold_usd]
 
-    # 3. If the filtered list is empty, return None
+    # 5. Apply filters: discard prices < Median * 0.4 and < (estimated_min_usd * 0.6)
+    filtered_prices = [
+        p for p in surviving_prices_usd
+        if p >= median_cutoff and p >= llm_threshold_usd
+    ]
+
+    # If the filtered list is empty, return None
     if not filtered_prices:
         logger.warning(
-            f"⚠️ [Filter Empty] All Mercari items were below threshold ({min_threshold_usd:.2f} USD) and filtered out."
+            f"⚠️ [Filter Empty] All Mercari items were below cutoffs (Median*0.4={median_cutoff:.2f} USD, LLM*0.6={llm_threshold_usd:.2f} USD) and filtered out."
         )
         return None
 
-    # 4. If there are valid prices, find the minimum price from this filtered list
+    # 6. Minimum valid price from surviving items
     min_price_usd = min(filtered_prices)
 
-    # 5. Currency Normalization: Convert valid minimum USD price to TWD
+    # 7. Currency Normalization: Convert valid minimum USD price to TWD
     twd = convert_to_twd(
         min_price_usd,
         currency="USD",
