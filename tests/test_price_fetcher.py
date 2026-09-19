@@ -522,10 +522,10 @@ async def test_shopee_fetcher_request_headers_and_params():
     called_url = mock_client.get.call_args[0][0]
     called_kwargs = mock_client.get.call_args[1]
 
-    assert called_kwargs["headers"]["x-rapidapi-host"] == test_env_host
+    assert called_url == "https://ninjaapi2.p.rapidapi.com/api/products?shop_id=fe_amart"
+    assert called_kwargs["headers"]["x-rapidapi-host"] == "ninjaapi2.p.rapidapi.com"
     assert called_kwargs["headers"]["x-rapidapi-key"] == test_env_key
-    assert called_kwargs["params"]["keyword"] == "Switch"
-    assert called_kwargs["params"]["site"] == "tw"
+    assert called_kwargs["params"] == {"shop_id": "Switch"}
 
     # Verify price is returned as integer in TWD
     assert isinstance(price, int)

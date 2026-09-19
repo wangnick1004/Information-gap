@@ -55,12 +55,12 @@ RAPIDAPI_KEY_SHOPEE: str = (
 RAPIDAPI_HOST_SHOPEE: str = (
     os.getenv("RAPIDAPI_HOST_SHOPEE")
     or getattr(settings, "rapidapi_host_shopee", None)
-    or "shopee-api.p.rapidapi.com"
+    or "ninjaapi2.p.rapidapi.com"
 ).strip()
 SHOPEE_API_URL: str = (
     os.getenv("SHOPEE_API_URL")
     or getattr(settings, "shopee_api_url", None)
-    or (f"https://{RAPIDAPI_HOST_SHOPEE}/search" if RAPIDAPI_HOST_SHOPEE else "")
+    or "https://ninjaapi2.p.rapidapi.com/api/products?shop_id=fe_amart"
 )
 
 SERPAPI_KEY: str = (
@@ -483,17 +483,15 @@ async def fetch_shopee_api_price(
     url = (
         os.getenv("SHOPEE_API_URL")
         or getattr(settings, "shopee_api_url", None)
-        or f"https://{api_host}/search"
+        or "https://ninjaapi2.p.rapidapi.com/api/products?shop_id=fe_amart"
     )
     headers = {
         "Accept": "application/json",
-        "x-rapidapi-host": api_host,
+        "x-rapidapi-host": "ninjaapi2.p.rapidapi.com",
         "x-rapidapi-key": api_key,
     }
     params = {
-        "keyword": clean_kw,
-        "q": clean_kw,
-        "site": "tw",
+        "shop_id": keyword,
     }
 
     timeout_config = aiohttp.ClientTimeout(
