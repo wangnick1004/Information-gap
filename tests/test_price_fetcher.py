@@ -23,6 +23,7 @@ from app import (
     format_platform_button_component,
     get_mock_plausible_price,
     inject_mercari_button_to_flex,
+    inject_shopee_button_to_flex,
     is_placeholder_key,
 )
 
@@ -747,5 +748,103 @@ async def test_fetch_price_routing_to_shopee():
          patch("price_fetcher.RAPIDAPI_KEY", ""):
         price_mock = await fetch_price("shopee", "Sony WH-1000XM5", enable_mock=True)
         assert price_mock == 1450
+
+
+def test_ui_integration_inject_shopee_button_to_flex():
+    """
+    Test UI injection for Shopee button:
+    - Replaces button text with '台灣蝦皮 (約 NT${twd_price})' or 'Shopee (約 NT${twd_price})'
+    - Falls back to '台灣蝦皮 (點擊查看)' or 'Shopee (點擊查看)' on None/0
+    - Leaves other buttons intact.
+    """
+    flex_sample = {
+        "type": "carousel",
+        "contents": [
+            {
+                "type": "bubble",
+                "footer": {
+                    "type": "box",
+                    "layout": "vertical",
+                    "contents": [
+                        {
+                            "type": "button",
+                            "text": "Mercari (約 NT$3500起)",
+                            "action": {
+                                "type": "uri",
+                                "label": "Mercari (約 NT$3500起)",
+                                "uri": "https://buyee.jp/mercari/search",
+                            },
+                        },
+                        {
+                            "type": "button",
+                            "text": "台灣蝦皮 (點擊查看)",
+                            "action": {
+                                "type": "uri",
+                                "label": "台灣蝦皮 (點擊查看)",
+                                "uri": "https://shopee.tw/search?keyword=Switch",
+                            },
+                        },
+                        {
+                            "type": "button",
+                            "text": "Shopee (點擊查看)",
+                            "action": {
+                                "type": "uri",
+                                "label": "Shopee (點擊查看)",
+                                "uri": "https://shopee.tw/search?keyword=Switch",
+                            },
+                        },
+                    ],
+                },
+            }
+        ],
+    }
+
+    # 1. Inject price 6500 -> "台灣蝦皮 (約 NT$6500)" and "Shopee (約 NT$6500)"
+    updated = inject_shopee_button_to_flex(flex_sample, 6500)
+    footer_contents = updated["contents"][0]["footer"]["contents"]
+    assert footer_contents[0]["text"] == "Mercari (約 NT$3500起)"
+    assert footer_contents[1]["text"] == "台灣蝦皮 (約 NT$6500)"
+    assert footer_contents[1]["action"]["label"] == "台灣蝦皮 (約 NT$6500)"
+    assert footer_contents[2]["text"] == "Shopee (約 NT$6500)"
+    assert footer_contents[2]["action"]["label"] == "Shopee (約 NT$6500)"
+
+    # 2. Inject None -> fallback "(點擊查看)"
+    updated_fallback = inject_shopee_button_to_flex(flex_sample, None)
+    fb_contents = updated_fallback["contents"][0]["footer"]["contents"]
+    assert fb_contents[1]["text"] == "台灣蝦皮 (點擊查看)"
+    assert fb_contents[1]["action"]["label"] == "台灣蝦皮 (點擊查看)"
+    assert fb_contents[2]["text"] == "Shopee (點擊查看)"
+    assert fb_contents[2]["action"]["label"] == "Shopee (點擊查看)"
+
+
+@pytest.mark.anyio
+async def test_fetch_shopee_api_price_starting_log(caplog):
+    """
+    Test Step 2: Logging:
+    Verify clear starting log right before making the Shopee API call:
+    logger.info(f"🌐 [Third-Party API] Fetching price for shopee: '{keyword}'")
+    """
+    import logging
+
+    mock_client = AsyncMock()
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.text = json.dumps({
+        "items": [
+            {"title": "Nintendo Switch OLED", "price": 8500},
+        ]
+    })
+    mock_client.get = AsyncMock(return_value=mock_resp)
+
+    with caplog.at_level(logging.INFO):
+        with patch.dict(os.environ, {"RAPIDAPI_KEY_SHOPEE": "shopee_key"}):
+            price = await fetch_shopee_api_price("Switch", client=mock_client)
+            assert price == 8500
+
+    assert any(
+        "🌐 [Third-Party API] Fetching price for shopee: 'Switch'" in record.message
+        for record in caplog.records
+    )
+
 
 

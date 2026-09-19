@@ -27,6 +27,7 @@ from price_fetcher import (
     get_mock_plausible_price,
     get_shopee_active_blacklist,
     inject_mercari_button_to_flex,
+    inject_shopee_button_to_flex,
     is_placeholder_key,
 )
 
@@ -56,4 +57,5 @@ __all__ = [
     "fetch_shopee_api_price",
     "format_platform_button_component",
     "inject_mercari_button_to_flex",
+    "inject_shopee_button_to_flex",
 ]

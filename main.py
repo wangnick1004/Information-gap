@@ -78,7 +78,9 @@ from services.lightweight_fetcher import (
 from price_fetcher import (
     fetch_mercari_api_price,
     fetch_price,
+    fetch_shopee_api_price,
     inject_mercari_button_to_flex,
+    inject_shopee_button_to_flex,
 )
 
 # Configure logging
@@ -445,6 +447,7 @@ async def handle_line_events(events: list, access_token: str) -> None:
             parsed_item: Optional[ParsedItem] = None
             rakuten_price: Optional[int] = None
             mercari_api_price: Optional[int] = None
+            shopee_price: Optional[int] = None
 
             try:
                 # Step 1: Multimodal Entity Extraction & Japanese/Chinese Search Query Generation
@@ -481,13 +484,20 @@ async def handle_line_events(events: list, access_token: str) -> None:
                     enable_mock=False,
                     estimated_min_usd=parsed_item.estimated_min_usd if parsed_item else None,
                 )
+                shopee_task = fetch_shopee_api_price(
+                    effective_keyword,
+                    timeout_seconds=8.0,
+                    enable_mock=False,
+                    estimated_min_usd=parsed_item.estimated_min_usd if parsed_item else None,
+                )
                 results = await asyncio.gather(
-                    jp_task, tw_task, cn_task, rakuten_task, mercari_task,
+                    jp_task, tw_task, cn_task, rakuten_task, mercari_task, shopee_task,
                     return_exceptions=True,
                 )
-                scraper_result, tw_result, cn_result, r_price, m_price = results
+                scraper_result, tw_result, cn_result, r_price, m_price, s_price = results
                 rakuten_price = r_price if (isinstance(r_price, int) and r_price > 0) else None
                 mercari_api_price = m_price if (isinstance(m_price, int) and m_price > 0) else None
+                shopee_price = s_price if (isinstance(s_price, int) and s_price > 0) else None
                 if isinstance(tw_result, Exception):
                     logger.warning(f"TW search failed: {tw_result}")
                     tw_result = None
@@ -526,6 +536,9 @@ async def handle_line_events(events: list, access_token: str) -> None:
                 if mercari_api_price and mercari_api_price > 0:
                     dynamic_pricing.mercari_min_price = mercari_api_price
                     dynamic_pricing.platform_min_prices["mercari"] = mercari_api_price
+                if shopee_price and shopee_price > 0:
+                    dynamic_pricing.shopee_min_price = shopee_price
+                    dynamic_pricing.platform_min_prices["shopee"] = shopee_price
 
                 mercari_display_price = (
                     f"{mercari_api_price}起"
@@ -554,6 +567,7 @@ async def handle_line_events(events: list, access_token: str) -> None:
                     rakuten_min_price=dynamic_pricing.rakuten_min_price,
                     enable_dynamic_buttons=True,
                 )
+                flex_dict = inject_shopee_button_to_flex(flex_dict, shopee_price)
                 flex_container = FlexContainer.from_dict(flex_dict)
                 alt_text = f"【比價分析】{effective_keyword}".strip()
 
@@ -593,36 +607,43 @@ async def handle_line_events(events: list, access_token: str) -> None:
                 # Attempt fast lightweight fetch if applicable (reuse successful prices from Step 2 if present)
                 rakuten_fallback_price = rakuten_price if (isinstance(rakuten_price, int) and rakuten_price > 0) else None
                 mercari_fallback_price = mercari_api_price if (isinstance(mercari_api_price, int) and mercari_api_price > 0) else None
+                shopee_fallback_price = shopee_price if (isinstance(shopee_price, int) and shopee_price > 0) else None
 
                 # Only attempt network fetch if not already retrieved in Step 2
-                if rakuten_fallback_price is None or mercari_fallback_price is None:
+                if rakuten_fallback_price is None or mercari_fallback_price is None or shopee_fallback_price is None:
                     try:
-                        need_rakuten = rakuten_fallback_price is None
-                        need_mercari = mercari_fallback_price is None
-                        if need_rakuten and need_mercari:
-                            r_fb, m_fb = await asyncio.gather(
-                                fetch_rakuten_min_price(kw_jp, timeout_seconds=8.0),
-                                fetch_mercari_api_price(
-                                    kw_jp,
-                                    timeout_seconds=8.0,
-                                    enable_mock=False,
-                                    estimated_min_usd=parsed_item.estimated_min_usd if parsed_item else None,
-                                ),
-                                return_exceptions=True,
-                            )
-                            rakuten_fallback_price = r_fb if (isinstance(r_fb, int) and r_fb > 0) else None
-                            mercari_fallback_price = m_fb if (isinstance(m_fb, int) and m_fb > 0) else None
-                        elif need_rakuten:
-                            r_fb = await fetch_rakuten_min_price(kw_jp, timeout_seconds=8.0)
-                            rakuten_fallback_price = r_fb if (isinstance(r_fb, int) and r_fb > 0) else None
-                        elif need_mercari:
-                            m_fb = await fetch_mercari_api_price(
+                        fb_tasks = []
+                        fb_keys = []
+                        if rakuten_fallback_price is None:
+                            fb_tasks.append(fetch_rakuten_min_price(kw_jp, timeout_seconds=8.0))
+                            fb_keys.append("rakuten")
+                        if mercari_fallback_price is None:
+                            fb_tasks.append(fetch_mercari_api_price(
                                 kw_jp,
                                 timeout_seconds=8.0,
                                 enable_mock=False,
                                 estimated_min_usd=parsed_item.estimated_min_usd if parsed_item else None,
-                            )
-                            mercari_fallback_price = m_fb if (isinstance(m_fb, int) and m_fb > 0) else None
+                            ))
+                            fb_keys.append("mercari")
+                        if shopee_fallback_price is None:
+                            fb_tasks.append(fetch_shopee_api_price(
+                                kw_zh,
+                                timeout_seconds=8.0,
+                                enable_mock=False,
+                                estimated_min_usd=parsed_item.estimated_min_usd if parsed_item else None,
+                            ))
+                            fb_keys.append("shopee")
+
+                        if fb_tasks:
+                            fb_results = await asyncio.gather(*fb_tasks, return_exceptions=True)
+                            for key, res in zip(fb_keys, fb_results):
+                                if isinstance(res, int) and res > 0:
+                                    if key == "rakuten":
+                                        rakuten_fallback_price = res
+                                    elif key == "mercari":
+                                        mercari_fallback_price = res
+                                    elif key == "shopee":
+                                        shopee_fallback_price = res
                     except Exception:
                         pass
 
@@ -640,13 +661,14 @@ async def handle_line_events(events: list, access_token: str) -> None:
                     min_price=None,
                     avg_price=None,
                     mercari_min_price=f"{mercari_fallback_price}起" if mercari_fallback_price else None,
-                    shopee_min_price=None,
+                    shopee_min_price=shopee_fallback_price,
                     taobao_min_price=None,
                     yahoo_tw_min_price=None,
                     yahoo_jp_min_price=None,
                     rakuten_min_price=rakuten_fallback_price,
                     enable_dynamic_buttons=True,
                 )
+                keyword_flex_dict = inject_shopee_button_to_flex(keyword_flex_dict, shopee_fallback_price)
                 flex_container = FlexContainer.from_dict(keyword_flex_dict)
                 reply_msg = FlexSendMessage(
                     alt_text="比價成功，來去撈便宜～",

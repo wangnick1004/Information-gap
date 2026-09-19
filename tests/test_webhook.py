@@ -824,3 +824,128 @@ def test_webhook_normal_flex_when_no_suggestion(
     assert len(reply_req.messages) == 1
     assert isinstance(reply_req.messages[0], FlexMessage)
 
+
+@patch("main.fetch_shopee_api_price", new_callable=AsyncMock)
+@patch("main.fetch_mercari_api_price", new_callable=AsyncMock)
+@patch("main.fetch_rakuten_min_price", new_callable=AsyncMock)
+@patch("main.scrape_buyee_prices")
+@patch("main.parse_fb_post")
+@patch("main.AsyncApiClient")
+@patch("main.AsyncMessagingApi")
+def test_webhook_concurrent_shopee_dispatch_and_ui_injection(
+    mock_messaging_api_class,
+    mock_api_client_class,
+    mock_parse,
+    mock_scrape,
+    mock_rakuten,
+    mock_mercari,
+    mock_shopee,
+):
+    """
+    Test that fetch_shopee_api_price is concurrently dispatched alongside Mercari and Rakuten,
+    and the returned Shopee price is correctly injected into the Flex Message UI button.
+    """
+    from services.parser import ParsedItem
+    from services.scraper import ScrapingResult
+    from linebot.v3.messaging import FlexMessage
+
+    mock_api = AsyncMock()
+    mock_messaging_api_class.return_value = mock_api
+
+    mock_parse.return_value = ParsedItem(
+        franchise="任天堂",
+        character="Switch OLED",
+        item_type="主機",
+        keyword_jp="Nintendo Switch",
+        keyword_zh="Switch OLED",
+        search_query_ja="Nintendo Switch",
+        perfected_keyword="Nintendo Switch OLED",
+        fb_price_twd=8500,
+        is_anime_merch=True,
+    )
+
+    mock_scrape.return_value = ScrapingResult(
+        query="Nintendo Switch",
+        search_url="https://buyee.jp/mercari/search?keyword=Switch",
+        lowest_price_jpy=30000.0,
+        median_price_jpy=35000.0,
+        representative_image_url="https://example.com/switch.jpg",
+        sample_prices=[30000.0, 35000.0, 40000.0],
+        total_found=3,
+    )
+
+    mock_rakuten.return_value = 7800
+    mock_mercari.return_value = 7200
+    mock_shopee.return_value = 6990
+
+    secret = "test_secret_shopee"
+    token = "test_token_shopee"
+
+    payload = {
+        "destination": "U1234567890",
+        "events": [
+            {
+                "type": "message",
+                "message": {
+                    "type": "text",
+                    "id": "100099",
+                    "text": "Switch OLED",
+                    "quoteToken": "quote123",
+                },
+                "timestamp": 1625641600000,
+                "source": {"type": "user", "userId": "U_shopee_user"},
+                "replyToken": "token_shopee_123",
+                "mode": "active",
+                "webhookEventId": "01FZ74A0TDDPYRVKNK77XKC3ZR",
+                "deliveryContext": {"isRedelivery": False},
+            }
+        ],
+    }
+    body_str = json.dumps(payload)
+    signature = generate_signature(secret, body_str)
+
+    with patch.object(settings, "line_channel_secret", secret), \
+         patch.object(settings, "line_channel_access_token", token):
+
+        response = client.post(
+            "/api/webhook",
+            content=body_str,
+            headers={"Content-Type": "application/json", "X-Line-Signature": signature},
+        )
+        assert response.status_code == 200
+
+    # 1. Verify fetch_shopee_api_price was called with effective keyword
+    mock_shopee.assert_awaited_once()
+    called_kw = mock_shopee.call_args[0][0]
+    assert "Switch" in called_kw
+
+    # 2. Verify Flex Message contains injected Shopee price button
+    mock_api.reply_message.assert_awaited_once()
+    reply_req = mock_api.reply_message.call_args[0][0]
+    flex_msg = reply_req.messages[0]
+    assert isinstance(flex_msg, FlexMessage)
+    flex_dict = flex_msg.contents.to_dict()
+
+    def _find_buttons(node):
+        btns = []
+        if isinstance(node, dict):
+            if node.get("type") == "button":
+                btns.append(node)
+            for v in node.values():
+                btns.extend(_find_buttons(v))
+        elif isinstance(node, list):
+            for item in node:
+                btns.extend(_find_buttons(item))
+        return btns
+
+    all_buttons = _find_buttons(flex_dict)
+    shopee_btns = [
+        b for b in all_buttons
+        if "蝦皮" in (b.get("text") or b.get("action", {}).get("label", ""))
+        or "shopee" in (b.get("text") or b.get("action", {}).get("label", "")).lower()
+    ]
+    assert len(shopee_btns) > 0
+    btn_label = shopee_btns[0].get("text") or shopee_btns[0].get("action", {}).get("label", "")
+    assert "6990" in btn_label
+
+

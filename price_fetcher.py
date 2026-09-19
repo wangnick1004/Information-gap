@@ -504,6 +504,7 @@ async def fetch_shopee_api_price(
     status_code = 200
     text = ""
 
+    logger.info(f"🌐 [Third-Party API] Fetching price for shopee: '{clean_kw}'")
     try:
         if client is not None:
             resp = await client.get(url, headers=headers, params=params, timeout=timeout_seconds)
@@ -834,7 +835,7 @@ async def fetch_price(
         has_shopee_key = not is_placeholder_key(shopee_api_key) or client is not None
         if has_shopee_key:
             try:
-                logger.info(f"🌐 [Shopee API] Fetching price for {plat}: '{clean_kw}'")
+                logger.info(f"🌐 [Third-Party API] Fetching price for {plat}: '{clean_kw}'")
                 price = await fetch_shopee_api_price(
                     keyword=clean_kw,
                     timeout_seconds=timeout_seconds,
@@ -996,3 +997,64 @@ def inject_mercari_button_to_flex(
 
     _walk_and_update(flex_dict)
     return flex_dict
+
+
+def inject_shopee_button_to_flex(
+    flex_dict: Dict[str, Any],
+    twd_price: Optional[Union[int, float, str]],
+) -> Dict[str, Any]:
+    """
+    Inject calculated TWD price or fallback into Flex Message payload for Shopee:
+    - If twd_price is valid: "text": "台灣蝦皮 (約 NT${price_str})" (or "Shopee (約 NT${price_str})")
+    - If twd_price is None/0: "text": "台灣蝦皮 (點擊查看)" (or "Shopee (點擊查看)")
+    """
+    if not isinstance(flex_dict, dict):
+        return flex_dict
+
+    has_price = twd_price is not None and str(twd_price).strip() not in ("", "0")
+    price_str = ""
+    if has_price:
+        try:
+            num_val = float(str(twd_price).replace(",", ""))
+            if num_val <= 0:
+                has_price = False
+            else:
+                price_str = f"{int(round(num_val))}"
+        except ValueError:
+            price_str = str(twd_price).strip()
+
+    if has_price:
+        btn_label_tw = f"台灣蝦皮 (約 NT${price_str})"
+        btn_label_en = f"Shopee (約 NT${price_str})"
+    else:
+        btn_label_tw = "台灣蝦皮 (點擊查看)"
+        btn_label_en = "Shopee (點擊查看)"
+
+    def _walk_and_update(node: Any):
+        if isinstance(node, dict):
+            if node.get("type") == "button":
+                action = node.get("action")
+                uri = action.get("uri", "") if isinstance(action, dict) else ""
+                label = action.get("label", "") if isinstance(action, dict) else ""
+                btn_text = node.get("text", "")
+                if (
+                    "shopee" in uri.lower()
+                    or "shopee" in label.lower()
+                    or "蝦皮" in label
+                    or "shopee" in btn_text.lower()
+                    or "蝦皮" in btn_text
+                ):
+                    is_tw = "蝦皮" in label or "蝦皮" in btn_text
+                    target_label = btn_label_tw if is_tw else btn_label_en
+                    node["text"] = target_label
+                    if isinstance(action, dict):
+                        action["label"] = target_label
+            for v in node.values():
+                _walk_and_update(v)
+        elif isinstance(node, list):
+            for item in node:
+                _walk_and_update(item)
+
+    _walk_and_update(flex_dict)
+    return flex_dict
+
