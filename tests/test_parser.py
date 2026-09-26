@@ -1,3 +1,4 @@
+import asyncio
 import io
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -877,3 +878,67 @@ def test_gemini_schema_limits_category_to_six_values():
     schema = ParsedItem.model_json_schema()
     category_schema = schema["$defs"][schema["properties"]["category"]["$ref"].split("/")[-1]]
     assert set(category_schema["enum"]) == {"3C 家電", "美妝保養", "服飾鞋包", "動漫周邊/玩具", "運動戶外", "其他"}
+
+
+# --- 時間上限（工作票 06）---
+
+def _hanging_then(*responses):
+    """第一次呼叫卡住不回應，之後依序回傳 responses。"""
+    calls = iter([None, *responses])
+
+    async def send_message(**kwargs):
+        response = next(calls)
+        if response is None:
+            await asyncio.sleep(3600)
+        return response
+
+    return send_message
+
+
+@pytest.mark.anyio
+async def test_parse_fb_post_abandons_a_hanging_attempt_and_retries():
+    success = MagicMock()
+    success.text = json.dumps({"keyword_zh": "Switch 2", "category": "3C 家電"})
+
+    with patch("services.parser.genai.Client") as mock_client_class:
+        mock_chat = MagicMock()
+        mock_client_class.return_value.aio.chats.create.return_value = mock_chat
+        mock_chat.send_message = AsyncMock(side_effect=_hanging_then(success))
+
+        result = await parse_fb_post(
+            "switch2", api_key="fake_api_key", attempt_timeout_seconds=0.01, retry_delay_seconds=0.01
+        )
+
+    assert result.keyword_zh == "SWITCH 2"
+    assert mock_chat.send_message.await_count == 2
+
+
+@pytest.mark.anyio
+async def test_parse_fb_post_every_attempt_hanging_is_an_ai_busy_error():
+    with patch("services.parser.genai.Client") as mock_client_class:
+        mock_chat = MagicMock()
+        mock_client_class.return_value.aio.chats.create.return_value = mock_chat
+        mock_chat.send_message = AsyncMock(side_effect=_hanging_then(None, None))
+
+        with pytest.raises(GeminiServerError):
+            await parse_fb_post(
+                "switch2", api_key="fake_api_key", attempt_timeout_seconds=0.01, retry_delay_seconds=0.01
+            )
+
+    assert mock_chat.send_message.await_count == 2
+
+
+def test_parse_fb_post_default_retries_fit_in_the_ai_budget():
+    """預設的單次上限、重試次數與等待加總不超過比價流程給 AI 解析的時間。"""
+    import inspect
+
+    from services.comparison import AI_PARSE_BUDGET_SECONDS
+
+    defaults = {
+        name: param.default for name, param in inspect.signature(parse_fb_post).parameters.items()
+    }
+    attempts = defaults["max_retries"]
+    worst_case = attempts * defaults["attempt_timeout_seconds"] + (attempts - 1) * defaults["retry_delay_seconds"]
+
+    assert defaults["attempt_timeout_seconds"] <= 3.0
+    assert worst_case <= AI_PARSE_BUDGET_SECONDS

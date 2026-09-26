@@ -1,6 +1,6 @@
 import logging
 import time
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Callable, Dict, Optional, Tuple
 
 logger = logging.getLogger("line_bot.cache")
 
@@ -13,15 +13,22 @@ class TTLCache:
     Automatically expires entries after the configured TTL (default: 3600 seconds / 1 hour).
     """
 
-    def __init__(self, default_ttl: float = 3600.0, max_size: int = 1000) -> None:
+    def __init__(
+        self,
+        default_ttl: float = 3600.0,
+        max_size: int = 1000,
+        now: Callable[[], float] = time.time,
+    ) -> None:
         self.default_ttl = float(default_ttl)
         self.max_size = int(max_size)
+        # 取得目前秒數；測試以假時鐘替換
+        self._now = now
         # Store key -> (value, expire_timestamp)
         self._cache: Dict[str, Tuple[Any, float]] = {}
 
     def _cleanup(self) -> None:
         """Purge expired entries from the cache."""
-        now = time.time()
+        now = self._now()
         expired_keys = [k for k, (_, exp) in self._cache.items() if now >= exp]
         for k in expired_keys:
             del self._cache[k]
@@ -51,7 +58,7 @@ class TTLCache:
             return None
 
         value, expire_at = entry
-        if time.time() >= expire_at:
+        if self._now() >= expire_at:
             # Expired
             self._cache.pop(key, None)
             logger.debug(f"Cache expired for key: '{key}'")
@@ -74,7 +81,7 @@ class TTLCache:
 
         self._cleanup()
         ttl_seconds = self.default_ttl if ttl is None else float(ttl)
-        expire_at = time.time() + ttl_seconds
+        expire_at = self._now() + ttl_seconds
         self._cache[key] = (value, expire_at)
         logger.debug(f"Cached key '{key}' with TTL {ttl_seconds}s (expires in {ttl_seconds/60:.1f} mins)")
 

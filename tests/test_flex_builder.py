@@ -672,3 +672,30 @@ def test_build_comparison_flex_without_japanese_platforms_has_single_card():
     assert len(flex_dict["contents"]) == 1
     assert _button_uris(flex_dict) == [f"https://example.com/{name}" for name in names]
     FlexContainer.from_dict(flex_dict)
+
+
+def _footer_texts(card):
+    return [c["text"] for c in card["footer"]["contents"] if c.get("type") == "text"]
+
+
+def test_build_comparison_flex_shows_price_time_in_taiwan_time_on_every_card():
+    from services.flex_builder import build_comparison_flex
+
+    # fetched_at 為 2026-10-01 00:00 UTC = 台灣時間 08:00
+    flex_dict, _ = build_comparison_flex(_links_only_result(mercari=2969))
+
+    assert len(flex_dict["contents"]) == 2
+    for card in flex_dict["contents"]:
+        assert "價格更新：2026/10/01 08:00" in _footer_texts(card)
+    FlexContainer.from_dict(flex_dict)
+
+
+def test_build_comparison_flex_cached_result_shows_original_price_time():
+    import dataclasses
+
+    from services.flex_builder import build_comparison_flex
+
+    cached = dataclasses.replace(_links_only_result(), from_cache=True)
+    flex_dict, _ = build_comparison_flex(cached)
+
+    assert "價格更新：2026/10/01 08:00" in _footer_texts(flex_dict["contents"][0])

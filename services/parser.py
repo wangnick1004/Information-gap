@@ -24,6 +24,8 @@ from services.scraper import normalize_search_keyword
 logger = logging.getLogger("line_bot.parser")
 
 DEFAULT_FALLBACK_MODEL = "gemini-flash-latest"
+# AI 忙碌、逾時時給使用者的訊息
+AI_BUSY_MESSAGE = "目前 AI 伺服器大塞車，請稍等一兩分鐘後再試一次喔！"
 
 
 class ParsedItem(BaseModel):
@@ -201,7 +203,7 @@ def is_rate_limit_error(exc: BaseException) -> bool:
 
 def is_transient_error(exc: BaseException) -> bool:
     """Check if the error is transient and eligible for automatic exponential backoff retry."""
-    return is_503_or_server_error(exc) or is_rate_limit_error(exc)
+    return isinstance(exc, asyncio.TimeoutError) or is_503_or_server_error(exc) or is_rate_limit_error(exc)
 
 
 def resolve_model_name(raw_model: Optional[str] = None) -> str:
@@ -346,13 +348,17 @@ async def parse_fb_post(
     image_data: Optional[Union[bytes, Image.Image]] = None,
     mime_type: str = "image/jpeg",
     api_key: Optional[str] = None,
-    max_retries: int = 3,
-    retry_delay_seconds: float = 2.0,
+    max_retries: int = 2,
+    retry_delay_seconds: float = 1.0,
     vision_prompt: Optional[str] = None,
+    attempt_timeout_seconds: float = 3.0,
 ) -> ParsedItem:
     """
     Extract structured retail item entities (keywords + category) from text or images.
     Every input goes through Gemini so abbreviations and slang are expanded.
+
+    每次呼叫 Gemini 最多等 attempt_timeout_seconds，逾時視同暫時性錯誤重試；
+    預設的次數與等待加總在比價流程給 AI 解析的時間內（services.comparison.AI_PARSE_BUDGET_SECONDS）。
     """
     cleaned_text = post_text.strip().lower() if post_text else ""
     if not cleaned_text and image_data is None:
@@ -422,7 +428,9 @@ async def parse_fb_post(
                 try:
                     chat = client.aio.chats.create(model=model_name, config=config)
                     message_payload = contents if len(contents) > 1 else contents[0]
-                    response = await chat.send_message(message=message_payload)
+                    response = await asyncio.wait_for(
+                        chat.send_message(message=message_payload), timeout=attempt_timeout_seconds
+                    )
 
                     if not response or not response.text:
                         raise GeminiAPIError("Empty response received from Gemini API.")
@@ -490,9 +498,12 @@ async def parse_fb_post(
     except IrrelevantPostError:
         raise
     except Exception as exc:
+        if isinstance(exc, asyncio.TimeoutError):
+            logger.error(f"Gemini API timed out ({attempt_timeout_seconds}s per attempt) after {attempt_count} attempts")
+            raise GeminiServerError(AI_BUSY_MESSAGE) from exc
         if is_503_or_server_error(exc):
             logger.error(f"Gemini API 503 ServerError / high demand persisted after {max_retries} attempts: {exc}")
-            raise GeminiServerError("目前 AI 伺服器大塞車，請稍等一兩分鐘後再試一次喔！") from exc
+            raise GeminiServerError(AI_BUSY_MESSAGE) from exc
         elif is_rate_limit_error(exc) or is_transient_error(exc):
             logger.error(f"Gemini API rate limit persisted after {max_retries} attempts: {exc}")
             raise GeminiRateLimitError("目前查詢人數較多，請稍後再試！") from exc

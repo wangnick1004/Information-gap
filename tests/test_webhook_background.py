@@ -283,3 +283,23 @@ def test_unexpected_error_outside_events_does_not_crash_service(line_api):
 
     assert response.status_code == 200
     assert client.get("/api/health").status_code == 200
+
+
+def test_deadline_is_counted_from_when_the_webhook_was_received(line_api):
+    """15 秒截止自收到訊息起算：比價流程拿到的是收到 webhook 的時間，而非開始比價的時間。"""
+    import time
+
+    received = []
+    real_pipeline = pipeline_with(FakeParser(ParsedItem(keyword_zh="商品")))
+
+    async def recording_pipeline(**kwargs):
+        received.append((kwargs.get("received_at"), time.monotonic()))
+        return await real_pipeline(**kwargs)
+
+    before = time.monotonic()
+    with patch("main.compare_prices", recording_pipeline):
+        assert post([text_event("商品", "ev_deadline", "token_deadline")]).status_code == 200
+
+    [(received_at, compare_started)] = received
+    assert received_at is not None
+    assert before <= received_at <= compare_started

@@ -1,5 +1,6 @@
 import logging
 import re
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 from services.comparison import ComparisonResult, PlatformQuote
@@ -54,6 +55,8 @@ PLATFORM_DISPLAY: Dict[str, Tuple[str, str]] = {
 }
 # 放在第一張卡（日本精選平台）的平台；其餘放在第二張卡
 JAPANESE_PLATFORMS = frozenset({"mercari", "yahoo_jp", "rakuten"})
+# 卡片上的價格取得時間以台灣時間顯示（台灣無日光節約時間）
+TAIWAN_TIME = timezone(timedelta(hours=8), "Asia/Taipei")
 
 
 def _override_urls(platform_urls: Optional[Dict[str, str]], **urls: str) -> Tuple[str, ...]:
@@ -973,15 +976,29 @@ def build_comparison_flex(result: ComparisonResult) -> Tuple[Dict[str, Any], str
         )
         alt_text = "比價成功，來去撈便宜～"
 
-    # 按鈕只呈現比價結果中的平台（依類別選出的 6 個），沒有平台的卡片不顯示
+    # 按鈕只呈現比價結果中的平台（依類別選出的 6 個），沒有平台的卡片不顯示；
+    # 各卡片內的按鈕順序沿用比價結果（依價格由低到高），不在此重新排序
     japanese = [(name, q) for name, q in result.platforms.items() if name in JAPANESE_PLATFORMS]
     others = [(name, q) for name, q in result.platforms.items() if name not in JAPANESE_PLATFORMS]
+    price_time = _price_time_text(result.fetched_at)
     flex_dict["contents"] = [
-        _with_platform_buttons(card, [_platform_button(name, quote) for name, quote in group])
+        _with_platform_buttons(card, [_platform_button(name, quote) for name, quote in group], price_time)
         for card, group in zip(flex_dict["contents"], (japanese, others))
         if group
     ]
     return flex_dict, alt_text
+
+
+def _price_time_text(fetched_at: datetime) -> Dict[str, Any]:
+    """價格取得時間；快取命中時比價結果保留的是原始取得時間。"""
+    return {
+        "type": "text",
+        "text": f"價格更新：{fetched_at.astimezone(TAIWAN_TIME):%Y/%m/%d %H:%M}",
+        "size": "xxs",
+        "color": "#999999",
+        "align": "center",
+        "margin": "sm",
+    }
 
 
 def _platform_button(name: str, quote: PlatformQuote) -> Dict[str, Any]:
@@ -997,8 +1014,10 @@ def _platform_button(name: str, quote: PlatformQuote) -> Dict[str, Any]:
     }
 
 
-def _with_platform_buttons(card: Dict[str, Any], buttons: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """以指定按鈕取代卡片頁尾原本寫死的平台按鈕，保留頁尾其他內容。"""
+def _with_platform_buttons(
+    card: Dict[str, Any], buttons: List[Dict[str, Any]], price_time: Dict[str, Any]
+) -> Dict[str, Any]:
+    """以指定按鈕取代卡片頁尾原本寫死的平台按鈕，保留頁尾其他內容，並附上價格取得時間。"""
     footer = card["footer"]["contents"]
-    card["footer"]["contents"] = buttons + [c for c in footer if c.get("type") != "button"]
+    card["footer"]["contents"] = buttons + [price_time] + [c for c in footer if c.get("type") != "button"]
     return card

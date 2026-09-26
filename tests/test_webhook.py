@@ -923,5 +923,6 @@ def test_webhook_all_platforms_fail_shows_no_price_numbers(
 
     texts = _collect_display_texts(reply_msg.contents.to_dict())
     assert texts, "expected a card with visible text"
-    for text in texts:
+    # 價格更新時間是唯一允許出現數字的文字
+    for text in (t for t in texts if not t.startswith("價格更新：")):
         assert not any(ch.isdigit() for ch in text), f"price-like number shown to user: {text!r}"

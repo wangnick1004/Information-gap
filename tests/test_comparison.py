@@ -1,22 +1,24 @@
 """比價流程入口（services.comparison.compare_prices）的測試：只換外部依賴（AI、平台轉接器、時鐘、快取）。"""
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
 from services.cache import TTLCache
-from services.comparison import GEMINI_VISION_PROMPT, PlatformStatus, compare_prices
+from services.comparison import (
+    DEADLINE_SECONDS,
+    GEMINI_VISION_PROMPT,
+    AiTimeoutError,
+    PlatformStatus,
+    compare_prices,
+)
 from services.parser import GeminiServerError, IrrelevantPostError, ParsedItem
 from services.platforms import FetchStatus
 from services.pricing import convert_to_twd
-from tests.fakes import FakeAdapter, FakeParser, failed, fake_platforms, found
+from tests.fakes import FakeAdapter, FakeClock, FakeParser, SlowAdapter, SlowParser, failed, fake_platforms, found
 
 FIXED_NOW = datetime(2026, 10, 1, 12, 0, tzinfo=timezone.utc)
 LINK_ONLY_PLATFORMS = ("yahoo_jp", "ruten", "taobao")
-
-
-def fixed_clock():
-    return FIXED_NOW
 
 
 def jpy_to_twd(price):
@@ -51,14 +53,15 @@ def no_affiliates(monkeypatch):
         monkeypatch.delenv(name, raising=False)
 
 
-async def run(text=None, image=None, parser=None, platforms=None, cache=None):
+async def run(text=None, image=None, parser=None, platforms=None, cache=None, clock=None, received_at=None):
     return await compare_prices(
         text=text,
         image=image,
         parser=parser or FakeParser(switch_item()),
         platforms=platforms or fake_platforms(),
-        clock=fixed_clock,
+        clock=clock or FakeClock(FIXED_NOW),
         cache=cache if cache is not None else TTLCache(),
+        received_at=received_at,
     )
 
 
@@ -77,7 +80,8 @@ async def test_success_returns_prices_per_platform_and_keywords():
     assert result.fetched_at == FIXED_NOW
     assert result.from_cache is False
 
-    assert list(result.platforms) == ["mercari", "yahoo_jp", "rakuten", "shopee", "ruten", "taobao"]
+    # 依價格由低到高：Mercari（約 6,4xx）< 蝦皮 6,990 < 日本樂天；無價格者依對照表順序排在後面
+    assert list(result.platforms) == ["mercari", "shopee", "rakuten", "yahoo_jp", "ruten", "taobao"]
     assert result.platforms["mercari"].status is PlatformStatus.OK
     assert result.platforms["mercari"].min_price_twd == jpy_to_twd(30000.0)
     assert result.platforms["rakuten"].min_price_twd == jpy_to_twd(37000.0)
@@ -248,7 +252,7 @@ async def test_cache_hit_skips_ai_and_platforms_and_keeps_original_time():
         text="  SWITCH ",
         parser=parser,
         platforms=fake_platforms(mercari=mercari),
-        clock=lambda: datetime(2026, 10, 1, 12, 30, tzinfo=timezone.utc),
+        clock=FakeClock(datetime(2026, 10, 1, 12, 30, tzinfo=timezone.utc)),
         cache=cache,
     )
 
@@ -326,3 +330,165 @@ async def test_platforms_without_adapter_are_link_only_with_search_link(no_affil
     )
     assert result.platforms["ruten"].search_url == "https://www.ruten.com.tw/find/?q=NINTENDO%20SWITCH%20OLED"
     assert result.platforms["yahoo_tw"].search_url == "https://tw.buy.yahoo.com/search/product?p=NINTENDO%20SWITCH%20OLED"
+
+
+# --- 15 秒截止（假時鐘＋假慢平台，不真的等待）---
+
+def anime_platforms(clock, **delays_and_results):
+    """動漫類有轉接器的平台（mercari、rakuten）設定延遲與回傳。"""
+    return fake_platforms(**{
+        name: SlowAdapter(clock, delay, result) for name, (delay, result) in delays_and_results.items()
+    })
+
+
+@pytest.mark.anyio
+async def test_reply_is_ready_within_deadline_even_if_a_platform_hangs():
+    clock = FakeClock(FIXED_NOW)
+    platforms = anime_platforms(clock, mercari=(600, found(30000.0)), rakuten=(2, found(37000.0)))
+
+    result = await run(text="switch", platforms=platforms, clock=clock)
+
+    assert clock.monotonic() <= DEADLINE_SECONDS
+    assert result.platforms["rakuten"].status is PlatformStatus.OK
+    assert result.platforms["rakuten"].min_price_twd == jpy_to_twd(37000.0)
+    assert result.platforms["mercari"].status is PlatformStatus.TIMEOUT
+    assert result.platforms["mercari"].min_price_twd is None
+    assert result.platforms["mercari"].search_url.startswith("https://buyee.jp/mercari/search")
+
+
+@pytest.mark.anyio
+async def test_waits_for_slow_platforms_that_finish_before_deadline():
+    clock = FakeClock(FIXED_NOW)
+    platforms = anime_platforms(clock, mercari=(12, found(30000.0)), rakuten=(1, found(37000.0)))
+
+    result = await run(text="switch", platforms=platforms, clock=clock)
+
+    assert result.platforms["mercari"].status is PlatformStatus.OK
+    assert result.platforms["mercari"].min_price_twd == jpy_to_twd(30000.0)
+    assert clock.monotonic() == 12
+
+
+@pytest.mark.anyio
+async def test_does_not_wait_for_deadline_when_all_platforms_are_done():
+    clock = FakeClock(FIXED_NOW)
+    platforms = anime_platforms(clock, mercari=(3, found(30000.0)), rakuten=(1, found(37000.0)))
+
+    await run(text="switch", platforms=platforms, clock=clock)
+
+    assert clock.monotonic() == 3
+
+
+@pytest.mark.anyio
+async def test_slow_ai_parsing_counts_against_the_same_deadline():
+    clock = FakeClock(FIXED_NOW)
+    parser = SlowParser(clock, 6, switch_item())
+    # 解析 6 秒後，9 秒的平台會超過 15 秒上限
+    platforms = anime_platforms(clock, mercari=(600, found(30000.0)), rakuten=(9, found(37000.0)))
+
+    result = await run(text="switch", parser=parser, platforms=platforms, clock=clock)
+
+    assert clock.monotonic() <= DEADLINE_SECONDS
+    assert result.platforms["rakuten"].status is PlatformStatus.TIMEOUT
+    assert result.platforms["mercari"].status is PlatformStatus.TIMEOUT
+
+
+@pytest.mark.anyio
+async def test_time_before_the_pipeline_counts_against_the_deadline():
+    """截止時間自收到訊息起算（例如下載圖片已花掉的時間）。"""
+    clock = FakeClock(FIXED_NOW)
+    received_at = clock.monotonic()
+    clock.advance(10)
+    platforms = anime_platforms(clock, mercari=(600, found(30000.0)), rakuten=(8, found(37000.0)))
+
+    result = await run(text="switch", platforms=platforms, clock=clock, received_at=received_at)
+
+    assert clock.monotonic() - received_at <= DEADLINE_SECONDS
+    assert result.platforms["rakuten"].status is PlatformStatus.TIMEOUT
+
+
+@pytest.mark.anyio
+async def test_hanging_ai_parser_gives_up_within_budget_as_ai_timeout():
+    clock = FakeClock(FIXED_NOW)
+    parser = SlowParser(clock, 600, switch_item())
+    mercari = FakeAdapter(found(30000.0))
+
+    with pytest.raises(AiTimeoutError) as exc_info:
+        await run(text="switch", parser=parser, platforms=fake_platforms(mercari=mercari), clock=clock)
+
+    # 與 AI 忙碌同一種降級回覆
+    assert isinstance(exc_info.value, GeminiServerError)
+    assert clock.monotonic() < DEADLINE_SECONDS
+    assert mercari.calls == []
+
+
+@pytest.mark.anyio
+async def test_cache_hit_keeps_original_time_and_expires_after_one_hour():
+    """快取 1 小時後過期（假時鐘）；過期前命中快取，顯示原始取得時間。"""
+    clock = FakeClock(FIXED_NOW)
+    cache = TTLCache(now=clock.monotonic)
+    first = await run(text="switch", cache=cache, clock=clock)
+
+    clock.advance(59 * 60)
+    hit = await run(text="switch", cache=cache, clock=clock, parser=FakeParser(error=AssertionError("cached")))
+    assert hit.from_cache is True
+    assert hit.fetched_at == first.fetched_at == FIXED_NOW
+
+    clock.advance(2 * 60)
+    parser = FakeParser(switch_item())
+    miss = await run(text="switch", cache=cache, clock=clock, parser=parser)
+    assert miss.from_cache is False
+    assert len(parser.calls) == 1
+    assert miss.fetched_at == FIXED_NOW + timedelta(minutes=61)
+
+
+@pytest.mark.anyio
+async def test_fetched_at_is_when_prices_were_fetched():
+    clock = FakeClock(FIXED_NOW)
+    platforms = anime_platforms(clock, mercari=(4, found(30000.0)), rakuten=(1, found(37000.0)))
+
+    result = await run(text="switch", platforms=platforms, clock=clock)
+
+    assert result.fetched_at == FIXED_NOW + timedelta(seconds=4)
+
+
+# --- 依價格排序（分潤不影響）---
+
+@pytest.mark.anyio
+async def test_platforms_sorted_by_lowest_price_then_unpriced_in_table_order():
+    platforms = fake_platforms(
+        mercari=found(40000.0),
+        rakuten=found(9000.0),
+        shopee=failed(FetchStatus.BLOCKED),
+    )
+    result = await run(text="switch", platforms=platforms)
+
+    assert list(result.platforms) == ["rakuten", "mercari", "yahoo_jp", "shopee", "ruten", "taobao"]
+
+
+@pytest.mark.anyio
+async def test_affiliate_settings_do_not_change_the_order(no_affiliates, monkeypatch):
+    from config import settings
+
+    def platforms():
+        return fake_platforms(mercari=found(40000.0), rakuten=found(9000.0), shopee=found(1000.0, currency="TWD"))
+
+    without = await run(text="switch", platforms=platforms())
+    monkeypatch.setattr(settings, "buyee_affiliate_id", "aff_tag_123")
+    monkeypatch.setattr(settings, "shopee_affiliate_base_url", "https://s.shopee.tw/aff?url=")
+    with_affiliates = await run(text="switch", platforms=platforms())
+
+    assert "af=aff_tag_123" in with_affiliates.platforms["mercari"].search_url
+    assert list(with_affiliates.platforms) == list(without.platforms) == [
+        "shopee", "rakuten", "mercari", "yahoo_jp", "ruten", "taobao",
+    ]
+
+
+@pytest.mark.anyio
+async def test_results_with_timed_out_platforms_are_not_cached():
+    clock = FakeClock(FIXED_NOW)
+    cache = TTLCache(now=clock.monotonic)
+    platforms = anime_platforms(clock, mercari=(600, found(30000.0)), rakuten=(1, found(37000.0)))
+
+    await run(text="switch", platforms=platforms, cache=cache, clock=clock)
+
+    assert len(cache) == 0

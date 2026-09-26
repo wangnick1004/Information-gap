@@ -4,21 +4,32 @@
 AI 解析器、平台集合、時鐘與快取皆可由呼叫端替換（測試與評測共用同一入口）。
 AI 判斷商品類別後，依類別對照表（services.categories）從平台集合選出 6 個平台，
 只透過這些平台的轉接器查詢。
+
+時間預算：自收到訊息起 15 秒內一定要能回覆。AI 解析有自己的上限（含重試），
+平台查詢在剩餘時間內盡量等全部完成；時間一到，未完成的平台標記為逾時（卡片上只給連結）。
+結果中的平台依相符最低價由低到高排序，無價格者依對照表順序排在後面；分潤只影響連結。
 """
 
 import asyncio
 import dataclasses
 import logging
 import statistics
-import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime
 from enum import Enum
-from typing import Awaitable, Callable, Dict, Mapping, Optional, Tuple
+from typing import Awaitable, Callable, Dict, Iterable, Mapping, Optional, Set, Tuple
 
 from services.cache import TTLCache, search_cache
 from services.categories import Category, platforms_for
-from services.parser import DEFAULT_VISION_PROMPT, IrrelevantPostError, ParsedItem, parse_fb_post
+from services.clock import Clock, system_clock
+from services.parser import (
+    DEFAULT_VISION_PROMPT,
+    AI_BUSY_MESSAGE,
+    GeminiServerError,
+    IrrelevantPostError,
+    ParsedItem,
+    parse_fb_post,
+)
 from services.platforms import FetchResult, FetchStatus, Platform, build_platforms, search_safely
 from services.pricing import (
     PricingResult,
@@ -30,7 +41,12 @@ from services.scraper import ScrapingResult, normalize_search_keyword
 logger = logging.getLogger("line_bot.comparison")
 
 CACHE_TTL_SECONDS = 3600.0
-PLATFORM_TIMEOUT_SECONDS = 8.0
+# 自收到訊息起，一定要在這個時間內回覆
+DEADLINE_SECONDS = 15.0
+# 保留給組卡片與送出 LINE 回覆的時間；平台查詢最晚在 DEADLINE_SECONDS - REPLY_MARGIN_SECONDS 截止
+REPLY_MARGIN_SECONDS = 1.0
+# AI 解析（含重試與等待）的上限：單次約 3 秒，最多再重試一次
+AI_PARSE_BUDGET_SECONDS = 7.0
 # 舊版卡片的 Mercari 統計只採計前 15 筆
 LEGACY_CARD_SAMPLE_SIZE = 15
 
@@ -84,17 +100,19 @@ class ComparisonResult:
         return self.scraper_result is not None
 
 
+class AiTimeoutError(GeminiServerError):
+    """AI 解析超過時間上限；與 AI 忙碌採同一種降級回覆。"""
+
+    def __init__(self, message: str = AI_BUSY_MESSAGE) -> None:
+        super().__init__(message)
+
+
 Parser = Callable[..., Awaitable[ParsedItem]]
-Clock = Callable[[], datetime]
 
 _STATUS_BY_FETCH = {
     FetchStatus.NO_RESULTS: PlatformStatus.NO_MATCH,
     FetchStatus.TIMEOUT: PlatformStatus.TIMEOUT,
 }
-
-
-def _utc_now() -> datetime:
-    return datetime.now(timezone.utc)
 
 
 def comparison_cache_key(text: str) -> str:
@@ -109,32 +127,45 @@ async def compare_prices(
     platforms: Optional[Mapping[str, Platform]] = None,
     clock: Optional[Clock] = None,
     cache: Optional[TTLCache] = None,
+    received_at: Optional[float] = None,
 ) -> ComparisonResult:
     """
     比價流程入口。text 與 image 必須恰好給一個。
     platforms 為候選平台池（預設為 build_platforms() 的全部平台），實際查詢哪 6 個由類別決定。
+    received_at 為收到訊息時的 clock.monotonic()，15 秒截止由此起算；未給則從現在起算。
 
     AI 服務錯誤（GeminiServerError / GeminiRateLimitError / GeminiAPIError）會原樣拋出，
-    由呼叫端決定如何回覆；平台失敗與「與購物無關」則反映在各平台狀態中。
+    AI 解析超過時間上限時拋出 AiTimeoutError（屬 GeminiServerError），由呼叫端決定如何回覆；
+    平台失敗、逾時與「與購物無關」則反映在各平台狀態中。
     """
     if (text is None) == (image is None):
         raise ValueError("compare_prices requires exactly one of text or image")
 
     parser = parser or parse_fb_post
     platforms = build_platforms() if platforms is None else platforms
-    clock = clock or _utc_now
+    clock = clock or system_clock
     cache = search_cache if cache is None else cache
+    started = clock.monotonic() if received_at is None else received_at
 
     cache_key = comparison_cache_key(text) if text else None
     if cache_key:
         cached = cache.get(cache_key)
         if isinstance(cached, ComparisonResult):
-            logger.info(f"⚡ [Cache Hit] Returning cached comparison for query: '{text}'")
+            logger.info(
+                f"⚡ [Cache Hit] Returning cached comparison for query: '{text}' "
+                f"(fetched at {cached.fetched_at.isoformat()})"
+            )
             return dataclasses.replace(cached, from_cache=True)
 
-    result = await _run_comparison(text, image, parser, platforms, clock)
+    deadline = started + DEADLINE_SECONDS - REPLY_MARGIN_SECONDS
+    result = await _run_comparison(text, image, parser, platforms, clock, deadline)
+    logger.info(
+        f"[Comparison] cache miss, {_format_ms(clock.monotonic() - started)} since received; "
+        + ", ".join(f"{name}={quote.status.value}" for name, quote in result.platforms.items())
+    )
 
-    if cache_key:
+    # 有平台逾時的結果不快取，避免一次慢查詢讓之後一小時都只拿到連結
+    if cache_key and not any(q.status is PlatformStatus.TIMEOUT for q in result.platforms.values()):
         cache.set(cache_key, result, ttl=CACHE_TTL_SECONDS)
     return result
 
@@ -145,16 +176,9 @@ async def _run_comparison(
     parser: Parser,
     platforms: Mapping[str, Platform],
     clock: Clock,
+    deadline: float,
 ) -> ComparisonResult:
-    parsed_item: Optional[ParsedItem] = None
-    try:
-        parsed_item = await parser(
-            post_text=text,
-            image_data=image,
-            vision_prompt=GEMINI_VISION_PROMPT if image else None,
-        )
-    except IrrelevantPostError as exc:
-        logger.warning(f"Input judged irrelevant to shopping, replying with search links: {exc}")
+    parsed_item = await _parse(text, image, parser, clock, deadline)
 
     keyword_zh, keyword_jp = _keywords(text, parsed_item)
     category = parsed_item.category if parsed_item else Category.OTHER
@@ -165,7 +189,7 @@ async def _run_comparison(
     )
     keywords = {"zh": keyword_zh, "ja": keyword_jp}
 
-    fetched = await _search_platforms(selected, keywords)
+    fetched = await _search_platforms(selected, keywords, clock, deadline)
 
     estimated_min_usd = parsed_item.estimated_min_usd if parsed_item else None
     quotes = {
@@ -178,8 +202,8 @@ async def _run_comparison(
         product_name=keyword_zh,
         keyword_zh=keyword_zh,
         keyword_jp=keyword_jp,
-        platforms=quotes,
-        fetched_at=clock(),
+        platforms=_sorted_by_price(quotes),
+        fetched_at=clock.now(),
         category=category,
         parsed_item=parsed_item,
     )
@@ -187,6 +211,62 @@ async def _run_comparison(
     if parsed_item and mercari and mercari.status is FetchStatus.OK and mercari.listings[0].currency == "JPY":
         result = _with_legacy_card_fields(result, parsed_item, mercari, keyword_jp)
     return result
+
+
+async def _parse(
+    text: Optional[str],
+    image: Optional[bytes],
+    parser: Parser,
+    clock: Clock,
+    deadline: float,
+) -> Optional[ParsedItem]:
+    """AI 解析，限時 AI_PARSE_BUDGET_SECONDS（且不超過整體截止）。與購物無關時回傳 None。"""
+    started = clock.monotonic()
+    task = asyncio.ensure_future(
+        parser(post_text=text, image_data=image, vision_prompt=GEMINI_VISION_PROMPT if image else None)
+    )
+    finished = await _wait_until(clock, [task], min(started + AI_PARSE_BUDGET_SECONDS, deadline))
+    elapsed = _format_ms(clock.monotonic() - started)
+    if task not in finished:
+        logger.warning(f"[AI Parse] timed out after {elapsed}")
+        raise AiTimeoutError()
+    try:
+        parsed_item = task.result()
+    except IrrelevantPostError as exc:
+        logger.warning(f"[AI Parse] irrelevant to shopping in {elapsed}, replying with search links: {exc}")
+        return None
+    except Exception as exc:
+        logger.warning(f"[AI Parse] failed in {elapsed}: {type(exc).__name__}")
+        raise
+    logger.info(f"[AI Parse] done in {elapsed}")
+    return parsed_item
+
+
+async def _wait_until(clock: Clock, tasks: Iterable["asyncio.Future"], deadline: float) -> Set["asyncio.Future"]:
+    """
+    等到所有工作完成或到達截止時間（clock.monotonic()），回傳截止前已完成的工作；
+    未完成者一律取消，不再等待。
+    """
+    tasks = list(tasks)
+    finished: Set["asyncio.Future"] = set()
+    if tasks and not all(task.done() for task in tasks):
+        timer = asyncio.ensure_future(clock.sleep(max(0.0, deadline - clock.monotonic())))
+        all_done = asyncio.gather(*tasks, return_exceptions=True)
+        try:
+            await asyncio.wait({timer, all_done}, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            # 呼叫端被取消時也要收掉所有工作，不留下無人等待的查詢
+            finished = {task for task in tasks if task.done()}
+            timer.cancel()
+            all_done.cancel()
+            for task in tasks:
+                task.cancel()
+        return finished
+    return {task for task in tasks if task.done()}
+
+
+def _format_ms(elapsed: float) -> str:
+    return f"{elapsed * 1000:.0f}ms"
 
 
 def _keywords(text: Optional[str], parsed_item: Optional[ParsedItem]) -> Tuple[str, str]:
@@ -203,19 +283,51 @@ def _keywords(text: Optional[str], parsed_item: Optional[ParsedItem]) -> Tuple[s
 
 
 async def _search_platforms(
-    platforms: Mapping[str, Platform], keywords: Mapping[str, str]
+    platforms: Mapping[str, Platform],
+    keywords: Mapping[str, str],
+    clock: Clock,
+    deadline: float,
 ) -> Dict[str, FetchResult]:
-    async def timed(name: str, platform: Platform) -> Tuple[str, FetchResult]:
-        started = time.monotonic()
-        fetched = await search_safely(platform.adapter, keywords[platform.keyword_lang], PLATFORM_TIMEOUT_SECONDS)
+    """並行查詢有轉接器的平台，最晚等到 deadline；未完成者為逾時。"""
+    started = clock.monotonic()
+    timeout = max(0.0, deadline - started)
+    finished_at: Dict[str, float] = {}
+
+    async def search(name: str, platform: Platform) -> FetchResult:
+        fetched = await search_safely(platform.adapter, keywords[platform.keyword_lang], timeout)
+        finished_at[name] = clock.monotonic()
+        return fetched
+
+    tasks = {
+        name: asyncio.ensure_future(search(name, platform))
+        for name, platform in platforms.items()
+        if platform.adapter is not None
+    }
+    finished = await _wait_until(clock, tasks.values(), deadline)
+
+    results: Dict[str, FetchResult] = {}
+    for name, task in tasks.items():
+        if task in finished:
+            fetched = task.result()
+            elapsed = finished_at[name] - started
+        else:
+            fetched = FetchResult(FetchStatus.TIMEOUT, detail="unfinished at the reply deadline")
+            elapsed = clock.monotonic() - started
         logger.info(
-            f"[Platform] {name}: {fetched.status.value} in {(time.monotonic() - started) * 1000:.0f}ms "
+            f"[Platform] {name}: {fetched.status.value} in {_format_ms(elapsed)} "
             f"({len(fetched.listings)} listings) {fetched.detail}".rstrip()
         )
-        return name, fetched
+        results[name] = fetched
+    return results
 
-    searchable = [(name, p) for name, p in platforms.items() if p.adapter is not None]
-    return dict(await asyncio.gather(*(timed(name, p) for name, p in searchable)))
+
+def _sorted_by_price(quotes: Mapping[str, PlatformQuote]) -> Dict[str, PlatformQuote]:
+    """依相符最低價由低到高；無價格者依原順序（對照表順序）排在後面。只看價格，不看分潤。"""
+    ranked = sorted(
+        quotes.items(),
+        key=lambda item: (item[1].min_price_twd is None, item[1].min_price_twd or 0),
+    )
+    return dict(ranked)
 
 
 def _quote(

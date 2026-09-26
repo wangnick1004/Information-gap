@@ -29,6 +29,7 @@ from pydantic import BaseModel
 from config import Settings, settings
 from services.cache import search_cache
 from services.cache import TTLCache
+from services.clock import system_clock
 from services.comparison import GEMINI_VISION_PROMPT, compare_prices, comparison_cache_key
 from services.flex_builder import (
     build_comparison_flex,
@@ -38,6 +39,7 @@ from services.flex_builder import (
 FlexSendMessage = FlexMessage
 TextSendMessage = TextMessage
 from services.parser import (
+    AI_BUSY_MESSAGE,
     GeminiRateLimitError,
     GeminiServerError,
 )
@@ -258,9 +260,10 @@ async def health_check() -> HealthResponse:
     )
 
 
-async def handle_line_events(events: list, access_token: str) -> None:
+async def handle_line_events(events: list, access_token: str, received_at: Optional[float] = None) -> None:
     """
     背景處理 LINE webhook 事件（webhook 已先回應 200）。
+    received_at 為收到 webhook 時的 system_clock.monotonic()，比價的 15 秒截止由此起算。
 
     每個事件各自並行處理：任何例外都會被捕捉、記錄並以降級訊息回覆，
     不影響同批其他事件，也不會讓服務崩潰。若 LINE 連線本身出錯，
@@ -275,7 +278,7 @@ async def handle_line_events(events: list, access_token: str) -> None:
 
             async def handle_isolated(index: int, event: Any) -> None:
                 try:
-                    await handle_line_event(event, line_bot_api, line_bot_blob_api)
+                    await handle_line_event(event, line_bot_api, line_bot_blob_api, received_at)
                 except Exception as exc:
                     logger.error(f"Unhandled error while handling LINE event: {exc}", exc_info=True)
                     await reply_text_safely(line_bot_api, event, GENERIC_ERROR_MESSAGE)
@@ -338,6 +341,7 @@ async def handle_line_event(
     event: Any,
     line_bot_api: AsyncMessagingApi,
     line_bot_blob_api: AsyncMessagingApiBlob,
+    received_at: Optional[float] = None,
 ) -> None:
     """
     處理單一 LINE 事件：
@@ -404,10 +408,10 @@ async def handle_line_event(
             logger.debug(f"Failed to show loading animation (non-critical): {anim_exc}")
 
     try:
-        result = await compare_prices(text=user_text, image=image_bytes)
+        result = await compare_prices(text=user_text, image=image_bytes, received_at=received_at)
     except GeminiServerError as exc:
         logger.warning(f"Gemini server error (503 UNAVAILABLE): {exc}")
-        await reply_text_safely(line_bot_api, event, str(exc) or "目前 AI 伺服器大塞車，請稍等一兩分鐘後再試一次喔！")
+        await reply_text_safely(line_bot_api, event, str(exc) or AI_BUSY_MESSAGE)
         return
     except GeminiRateLimitError as exc:
         logger.warning(f"Gemini rate limit exceeded: {exc}")
@@ -440,6 +444,8 @@ async def line_webhook(
     - Responds immediately; events are handled in the background and replied via reply token.
     - Returns HTTP 200 on success, or HTTP 400 on signature / payload errors.
     """
+    # 15 秒回覆截止自收到訊息起算
+    received_at = system_clock.monotonic()
     if not x_line_signature:
         logger.error("Missing X-Line-Signature header in request.")
         raise HTTPException(
@@ -488,7 +494,7 @@ async def line_webhook(
         # 不標記為已受理：修好設定後 LINE 重送的事件仍能被處理
         logger.warning("LINE_CHANNEL_ACCESS_TOKEN is not configured; skipping API reply.")
         return Response(content="OK", media_type="text/plain", status_code=status.HTTP_200_OK)
-    background_tasks.add_task(handle_line_events, claim_new_events(events), access_token)
+    background_tasks.add_task(handle_line_events, claim_new_events(events), access_token, received_at)
 
     return Response(content="OK", media_type="text/plain", status_code=status.HTTP_200_OK)
 
