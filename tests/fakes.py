@@ -1,6 +1,9 @@
 """測試用假依賴：替換比價流程入口的 AI 解析器與平台抓價函式（不碰網路）。"""
 
+import base64
 import functools
+import hashlib
+import hmac
 from types import SimpleNamespace
 
 from services.comparison import PlatformFetchers, compare_prices
@@ -64,3 +67,9 @@ def fake_fetchers(**overrides):
 def pipeline_with(parser, fetchers=None):
     """真實的比價流程入口，但換上假 AI 與假平台；用來 patch main.compare_prices。"""
     return functools.partial(compare_prices, parser=parser, fetchers=fetchers or fake_fetchers())
+
+
+def generate_signature(secret: str, body: str) -> str:
+    """計算 LINE webhook 請求的 X-Line-Signature（HMAC-SHA256）。"""
+    digest = hmac.new(secret.encode("utf-8"), body.encode("utf-8"), hashlib.sha256).digest()
+    return base64.b64encode(digest).decode("utf-8")

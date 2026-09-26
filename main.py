@@ -38,7 +38,6 @@ from services.flex_builder import (
 FlexSendMessage = FlexMessage
 TextSendMessage = TextMessage
 from services.parser import (
-    GeminiAPIError,
     GeminiRateLimitError,
     GeminiServerError,
 )
@@ -264,38 +263,75 @@ async def handle_line_events(events: list, access_token: str) -> None:
     背景處理 LINE webhook 事件（webhook 已先回應 200）。
 
     每個事件各自並行處理：任何例外都會被捕捉、記錄並以降級訊息回覆，
-    不影響同批其他事件，也不會讓服務崩潰。
+    不影響同批其他事件，也不會讓服務崩潰。若 LINE 連線本身出錯，
+    以新建立的連線對尚未回覆的事件補送降級訊息。
     """
+    answered: set[int] = set()
+
     try:
-        configuration = Configuration(access_token=access_token)
-        async with AsyncApiClient(configuration) as api_client:
+        async with AsyncApiClient(Configuration(access_token=access_token)) as api_client:
             line_bot_api = AsyncMessagingApi(api_client)
             line_bot_blob_api = AsyncMessagingApiBlob(api_client)
 
-            async def handle_isolated(event: Any) -> None:
+            async def handle_isolated(index: int, event: Any) -> None:
                 try:
                     await handle_line_event(event, line_bot_api, line_bot_blob_api)
                 except Exception as exc:
                     logger.error(f"Unhandled error while handling LINE event: {exc}", exc_info=True)
                     await reply_text_safely(line_bot_api, event, GENERIC_ERROR_MESSAGE)
+                answered.add(index)
 
             # 同批事件並行處理，避免後面事件的 reply token 排隊到過期
-            await asyncio.gather(*(handle_isolated(event) for event in events))
+            await asyncio.gather(*(handle_isolated(i, event) for i, event in enumerate(events)))
     except Exception as exc:
         logger.error(f"Unexpected error handling LINE events: {exc}", exc_info=True)
+        unanswered = [event for i, event in enumerate(events) if i not in answered]
+        if unanswered:
+            await reply_error_with_fresh_client(unanswered, access_token)
+
+
+async def reply_error_with_fresh_client(events: list, access_token: str) -> None:
+    """原本的 LINE 連線故障時，另建連線對這些事件回覆降級訊息；再失敗只記錄。"""
+    try:
+        async with AsyncApiClient(Configuration(access_token=access_token)) as api_client:
+            line_bot_api = AsyncMessagingApi(api_client)
+            await asyncio.gather(
+                *(reply_text_safely(line_bot_api, event, GENERIC_ERROR_MESSAGE) for event in events)
+            )
+    except Exception as exc:
+        logger.error(f"Failed to send fallback replies with a fresh LINE client: {exc}", exc_info=True)
+
+
+async def reply_text(line_bot_api: AsyncMessagingApi, event: Any, text: str) -> None:
+    """以文字回覆事件；失敗時拋出，交由上層降級處理。"""
+    await line_bot_api.reply_message(
+        ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text=text)])
+    )
 
 
 async def reply_text_safely(line_bot_api: AsyncMessagingApi, event: Any, text: str) -> None:
     """盡力以文字回覆事件；失敗只記錄，不再拋出。"""
-    reply_token = getattr(event, "reply_token", None)
-    if not reply_token:
+    if not getattr(event, "reply_token", None):
         return
     try:
-        await line_bot_api.reply_message(
-            ReplyMessageRequest(reply_token=reply_token, messages=[TextMessage(text=text)])
-        )
+        await reply_text(line_bot_api, event, text)
     except Exception as exc:
         logger.error(f"Failed to send fallback reply: {exc}", exc_info=True)
+
+
+# Rich Menu 指令（含舊名稱）→ 回覆文字；這些指令不經比價、不受限流
+RICH_MENU_RESPONSES: Dict[str, str] = {
+    "新手指南": GUIDE_RESPONSE_TEXT,
+    "新手圖解指南": GUIDE_RESPONSE_TEXT,
+    "平台比較與免責": DISCLAIMER_RESPONSE_TEXT,
+    "法律免責聲明": DISCLAIMER_RESPONSE_TEXT,
+    "集運倉介紹": SHIPPING_GUIDE_RESPONSE_TEXT,
+    "集貨倉介紹": SHIPPING_GUIDE_RESPONSE_TEXT,
+    "客服與回報": FEEDBACK_RESPONSE_TEXT,
+    "客服與問題回報": FEEDBACK_RESPONSE_TEXT,
+}
+
+IMAGE_DOWNLOAD_FAILED_MESSAGE = "無法下載您傳送的圖片，請稍後再試或直接提供文字描述。"
 
 
 async def handle_line_event(
@@ -308,21 +344,11 @@ async def handle_line_event(
     1. FollowEvent 回覆歡迎說明。
     2. Rich Menu 指令（新手指南、平台比較與免責、集運倉介紹、客服與回報）。
     3. 文字或圖片（經 LINE Blob API 下載）交給比價流程入口，結果轉成卡片回覆。
-    4. AI 故障或其他錯誤時回覆降級訊息。
+    4. AI 故障時回覆對應的降級訊息；其他例外往上拋，由 handle_line_events 回覆通用降級訊息。
     """
-    # Handle FollowEvent (New Friend / Unblock)
     if isinstance(event, FollowEvent):
         logger.info(f"Handling FollowEvent from user {getattr(event.source, 'user_id', 'unknown')}")
-        try:
-            await line_bot_api.reply_message(
-                ReplyMessageRequest(
-                    reply_token=event.reply_token,
-                    messages=[TextMessage(text=WELCOME_RESPONSE_TEXT)],
-                )
-            )
-            logger.info("Successfully sent welcome message for FollowEvent.")
-        except Exception as exc:
-            logger.error(f"Failed to send welcome message for FollowEvent: {exc}", exc_info=True)
+        await reply_text(line_bot_api, event, WELCOME_RESPONSE_TEXT)
         return
 
     if not isinstance(event, MessageEvent):
@@ -335,49 +361,10 @@ async def handle_line_event(
         user_text = event.message.text.strip().lower()
         logger.info(f"Processing text message from user: {user_text[:60]}...")
 
-        # --- Rich Menu Command Router ---
-        # 1. Newbie Guide Command
-        if user_text in ("新手指南", "新手圖解指南"):
-            logger.info("Handling '新手指南' rich menu command.")
-            await line_bot_api.reply_message(
-                ReplyMessageRequest(
-                    reply_token=event.reply_token,
-                    messages=[TextMessage(text=GUIDE_RESPONSE_TEXT)],
-                )
-            )
-            return
-
-        # 2. Disclaimer & Platform Comparison Command
-        if user_text in ("平台比較與免責", "法律免責聲明"):
-            logger.info("Handling '平台比較與免責' rich menu command.")
-            await line_bot_api.reply_message(
-                ReplyMessageRequest(
-                    reply_token=event.reply_token,
-                    messages=[TextMessage(text=DISCLAIMER_RESPONSE_TEXT)],
-                )
-            )
-            return
-
-        # 3. Shipping Guide Command
-        if user_text in ("集運倉介紹", "集貨倉介紹"):
-            logger.info("Handling '集運倉介紹' rich menu command.")
-            await line_bot_api.reply_message(
-                ReplyMessageRequest(
-                    reply_token=event.reply_token,
-                    messages=[TextMessage(text=SHIPPING_GUIDE_RESPONSE_TEXT)],
-                )
-            )
-            return
-
-        # 4. Customer Support and Feedback Command
-        if user_text in ("客服與回報", "客服與問題回報"):
-            logger.info("Handling '客服與回報' rich menu command.")
-            await line_bot_api.reply_message(
-                ReplyMessageRequest(
-                    reply_token=event.reply_token,
-                    messages=[TextMessage(text=FEEDBACK_RESPONSE_TEXT)],
-                )
-            )
+        menu_response = RICH_MENU_RESPONSES.get(user_text)
+        if menu_response is not None:
+            logger.info(f"Handling '{user_text}' rich menu command.")
+            await reply_text(line_bot_api, event, menu_response)
             return
 
     elif isinstance(event.message, ImageMessageContent):
@@ -387,13 +374,7 @@ async def handle_line_event(
             logger.info(f"Successfully retrieved {len(image_bytes)} bytes of image content.")
         except Exception as exc:
             logger.error(f"Failed to retrieve image blob: {exc}", exc_info=True)
-            fallback_text = "無法下載您傳送的圖片，請稍後再試或直接提供文字描述。"
-            await line_bot_api.reply_message(
-                ReplyMessageRequest(
-                    reply_token=event.reply_token,
-                    messages=[TextMessage(text=fallback_text)],
-                )
-            )
+            await reply_text(line_bot_api, event, IMAGE_DOWNLOAD_FAILED_MESSAGE)
             return
     else:
         # Unsupported message type (stickers, audio, etc.)
@@ -406,12 +387,7 @@ async def handle_line_event(
         logger.warning(
             f"🛑 [Rate Limit Exceeded] User {user_id} exceeded {RATE_LIMIT_MAX_REQUESTS} searches per {RATE_LIMIT_WINDOW_SECONDS}s."
         )
-        await line_bot_api.reply_message(
-            ReplyMessageRequest(
-                reply_token=event.reply_token,
-                messages=[TextMessage(text=RATE_LIMIT_COOLDOWN_MESSAGE)],
-            )
-        )
+        await reply_text(line_bot_api, event, RATE_LIMIT_COOLDOWN_MESSAGE)
         return
 
     # Step 0: Trigger LINE Loading Animation immediately (typing indicator for user)
@@ -429,27 +405,24 @@ async def handle_line_event(
 
     try:
         result = await compare_prices(text=user_text, image=image_bytes)
-        flex_dict, alt_text = build_comparison_flex(result)
-        reply_msg = FlexMessage(alt_text=alt_text, contents=FlexContainer.from_dict(flex_dict))
-        await line_bot_api.reply_message(
-            ReplyMessageRequest(
-                reply_token=event.reply_token,
-                messages=[reply_msg],
-            )
-        )
-        logger.info("Successfully replied with Flex Message comparison card.")
-
     except GeminiServerError as exc:
         logger.warning(f"Gemini server error (503 UNAVAILABLE): {exc}")
         await reply_text_safely(line_bot_api, event, str(exc) or "目前 AI 伺服器大塞車，請稍等一兩分鐘後再試一次喔！")
-
+        return
     except GeminiRateLimitError as exc:
         logger.warning(f"Gemini rate limit exceeded: {exc}")
         await reply_text_safely(line_bot_api, event, str(exc) or "目前查詢人數較多，請稍後再試！")
+        return
 
-    except (GeminiAPIError, Exception) as exc:
-        logger.error(f"Error executing price comparison pipeline: {exc}", exc_info=True)
-        await reply_text_safely(line_bot_api, event, GENERIC_ERROR_MESSAGE)
+    flex_dict, alt_text = build_comparison_flex(result)
+    reply_msg = FlexMessage(alt_text=alt_text, contents=FlexContainer.from_dict(flex_dict))
+    await line_bot_api.reply_message(
+        ReplyMessageRequest(
+            reply_token=event.reply_token,
+            messages=[reply_msg],
+        )
+    )
+    logger.info("Successfully replied with Flex Message comparison card.")
 
 
 @app.post("/api/webhook", summary="LINE Messaging API Webhook Endpoint")

@@ -2,15 +2,14 @@
 
 import asyncio
 import json
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
 
-from main import app, settings
+from main import GENERIC_ERROR_MESSAGE, app, settings
 from services.parser import ParsedItem
-from tests.fakes import FakeParser, pipeline_with
-from tests.test_webhook import generate_signature
+from tests.fakes import FakeParser, generate_signature, pipeline_with
 
 SECRET = "test_secret_bg"
 TOKEN = "test_token_bg"
@@ -104,7 +103,7 @@ async def test_responds_200_before_comparison_finishes_then_replies_in_backgroun
     sent = []
     with patch("main.compare_prices", slow_pipeline):
         call = asyncio.create_task(asgi_post(body, headers, sent))
-        for _ in range(200):
+        for _ in range(200):  # 最多等 2 秒
             if any(m["type"] == "http.response.body" for m in sent):
                 break
             await asyncio.sleep(0.01)
@@ -234,7 +233,7 @@ def test_comparison_exception_replies_degraded_message(line_api):
 
     [(reply_token, msg)] = replies(line_api)
     assert reply_token == "token_boom"
-    assert msg.text == "系統處理時發生異常，請確認輸入內容或稍後再試。"
+    assert msg.text == GENERIC_ERROR_MESSAGE
 
 
 def test_failure_in_one_event_does_not_stop_later_events(line_api):
@@ -254,6 +253,28 @@ def test_failure_in_one_event_does_not_stop_later_events(line_api):
     assert response.status_code == 200
     ok_replies = [msg for token, msg in replies(line_api) if token == "token_ok"]
     assert [msg.type for msg in ok_replies] == ["flex"]
+
+
+def test_client_setup_failure_still_replies_degraded_message_with_fresh_client(line_api):
+    # 第一次建立 LINE 連線失敗、重建成功：使用者仍收到降級訊息
+    with patch("main.AsyncApiClient", side_effect=[RuntimeError("client init failed"), MagicMock()]), \
+         patch("main.compare_prices", pipeline_with(FakeParser(ParsedItem(keyword_zh="商品")))):
+        assert post([text_event("商品", "ev_setup", "token_setup")]).status_code == 200
+
+    [(reply_token, msg)] = replies(line_api)
+    assert reply_token == "token_setup"
+    assert msg.text == GENERIC_ERROR_MESSAGE
+
+
+def test_client_teardown_failure_does_not_reply_twice(line_api):
+    # 事件已回覆後才在關閉連線時出錯：不應再補送降級訊息
+    client_ctx = MagicMock()
+    client_ctx.__aexit__.side_effect = RuntimeError("close failed")
+    with patch("main.AsyncApiClient", return_value=client_ctx), \
+         patch("main.compare_prices", pipeline_with(FakeParser(ParsedItem(keyword_zh="商品")))):
+        assert post([text_event("商品", "ev_close", "token_close")]).status_code == 200
+
+    assert [(token, msg.type) for token, msg in replies(line_api)] == [("token_close", "flex")]
 
 
 def test_unexpected_error_outside_events_does_not_crash_service(line_api):

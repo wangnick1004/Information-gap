@@ -1,6 +1,3 @@
-import base64
-import hashlib
-import hmac
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -9,19 +6,9 @@ from fastapi.testclient import TestClient
 
 from main import app, settings
 from services.parser import ParsedItem
-from tests.fakes import FakeParser, fake_fetchers, pipeline_with, returning
+from tests.fakes import FakeParser, fake_fetchers, generate_signature, pipeline_with, returning
 
 client = TestClient(app)
-
-
-def generate_signature(secret: str, body: str) -> str:
-    """Compute HMAC-SHA256 signature for LINE webhook payload."""
-    hash_value = hmac.new(
-        secret.encode("utf-8"),
-        body.encode("utf-8"),
-        hashlib.sha256,
-    ).digest()
-    return base64.b64encode(hash_value).decode("utf-8")
 
 
 def test_health_check():
