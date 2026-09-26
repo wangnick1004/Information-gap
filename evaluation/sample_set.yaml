@@ -1,0 +1,44 @@
+# 評測集範例（格式說明見 evaluation/README.md）。
+# 正式的 50 筆評測集（工作票 09）請另存一個檔案，例如 evaluation/eval_set.yaml，
+# 圖片放在同資料夾的 images/ 下。
+
+- id: sample-3c-airpods
+  input:
+    text: airpods pro 3 現在哪裡買最便宜
+  category: 3C 家電
+  expected:
+    name: Apple AirPods Pro 3
+    model: AirPods Pro 3
+    urls:
+      - https://www.apple.com/tw/airpods-pro/
+  source:
+    platform: 範例（非真實貼文）
+    date: 2026-09-26
+
+- id: sample-beauty-skii
+  input:
+    text: 求價 SK2 神仙水 230ml 全新未拆
+  category: 美妝保養
+  expected:
+    name: SK-II 青春露 230ml
+    model: 青春露 230ml
+    # 「SK2」「神仙水」是慣用語，AI 要展開成正式品名與容量才算正確
+    match_terms: [SK-II, 青春露, 230]
+    urls:
+      - https://sk-ii.com.tw/product/facial-treatment-essence
+  source:
+    platform: 範例（非真實貼文）
+    date: 2026-09-26
+
+- id: sample-3c-switch2
+  input:
+    text: 售 switch2 主機 台灣公司貨 12000
+  category: 3C 家電
+  expected:
+    name: Nintendo Switch 2 主機
+    model: Switch 2
+    urls:
+      - https://www.nintendo.com/tw/switch2/
+  source:
+    platform: 範例（非真實貼文）
+    date: 2026-09-26
