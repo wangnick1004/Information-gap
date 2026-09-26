@@ -473,7 +473,7 @@ def test_webhook_rate_limit_interception(mock_messaging_api_class, mock_api_clie
                     "source": {"type": "user", "userId": test_user},
                     "replyToken": "nHuyWiB7yP5Zw52FIkcQobQuGDXCTA",
                     "mode": "active",
-                    "webhookEventId": "01FZ74A0TDDPYRVKNK77XKC3ZR",
+                    "webhookEventId": f"ev_rate_limit_{text_msg}",
                     "deliveryContext": {"isRedelivery": False},
                 }
             ],
