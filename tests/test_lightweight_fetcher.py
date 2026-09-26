@@ -291,16 +291,17 @@ async def test_rakuten_price_retained_on_scraper_failure():
         is_acg_or_toy=True,
     )
 
-    from tests.fakes import FakeParser, fake_fetchers, pipeline_with, returning
+    from services.platforms import FetchStatus
+    from tests.fakes import FakeAdapter, FakeParser, failed, fake_platforms, found, pipeline_with
 
-    rakuten = returning(3837)  # Rakuten succeeded on the first concurrent fetch!
-    fetchers = fake_fetchers(
-        # Simulate Buyee scraper timing out
-        buyee=returning(ScrapingTimeoutError("Scraping timed out")),
+    rakuten = FakeAdapter(found(3837.0, currency="TWD"))  # Rakuten succeeded on the first concurrent fetch!
+    platforms = fake_platforms(
+        # Buyee Mercari 逾時
+        mercari=failed(FetchStatus.TIMEOUT),
         rakuten=rakuten,
     )
 
-    with patch("main.compare_prices", pipeline_with(FakeParser(parsed_item), fetchers)), \
+    with patch("main.compare_prices", pipeline_with(FakeParser(parsed_item), platforms)), \
          patch("main.AsyncMessagingApi") as mock_msg_api_class:
 
         mock_api = AsyncMock()
@@ -314,8 +315,7 @@ async def test_rakuten_price_retained_on_scraper_failure():
         assert len(sent_messages) == 1
         flex_dict = sent_messages[0].contents.to_dict()
 
-        # The Rakuten price should have been retained (3837) without being re-fetched!
-        # Because it was retained, fetch_rakuten_min_price was called exactly ONCE (in Step 2), not re-called in fallback!
+        # 樂天價格保留，且每個平台只查詢一次
         assert len(rakuten.calls) == 1
         card1 = flex_dict["contents"][0]
         buttons = [c for c in card1["footer"]["contents"] if c.get("type") == "button"]

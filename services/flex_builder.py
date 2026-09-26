@@ -1,18 +1,28 @@
 import logging
-import os
 import re
-import urllib.parse
 from typing import Any, Dict, Optional, Tuple, Union
 
-from config import settings
 from price_fetcher import inject_shopee_button_to_flex
-from services.comparison import ComparisonResult, PlatformQuote
+from services.comparison import ComparisonResult
 from services.parser import ParsedAnimeItem, ParsedItem
 from services.pricing import PricingResult
 from services.scraper import (
     ScrapingResult,
-    normalize_rakuten_search_keyword,
     normalize_search_keyword,
+)
+from services.search_links import (  # noqa: F401（沿用舊匯入路徑）
+    BUYEE_MERCARI_SEARCH_BASE_URL,
+    BUYEE_RAKUTEN_SEARCH_BASE_URL,
+    BUYEE_YAHOO_SEARCH_BASE_URL,
+    SHOPEE_SEARCH_BASE_URL,
+    TAOBAO_SEARCH_BASE_URL,
+    YAHOO_TW_SEARCH_BASE_URL,
+    append_affiliate_id,
+    build_buyee_rakuten_search_url,
+    build_buyee_yahoo_search_url,
+    build_shopee_search_url,
+    build_taobao_search_url,
+    build_yahoo_tw_search_url,
 )
 
 logger = logging.getLogger("line_bot.flex_builder")
@@ -28,186 +38,11 @@ SHOPEE_ORANGE_COLOR = "#EE4D2D"      # Shopee official vibrant orange
 TAOBAO_RED_ORANGE_COLOR = "#FF5000"  # Taobao official warm red-orange
 YAHOO_TW_PURPLE_COLOR = "#6001D2"     # Yahoo! Taiwan Shopping signature purple
 
-BUYEE_MERCARI_SEARCH_BASE_URL = "https://buyee.jp/mercari/search"
-BUYEE_YAHOO_SEARCH_BASE_URL = "https://buyee.jp/item/search/query"
-BUYEE_RAKUTEN_SEARCH_BASE_URL = "https://buyee.jp/rakuten/shopping/search/category/0"
-SHOPEE_SEARCH_BASE_URL = "https://shopee.tw/search"
-TAOBAO_SEARCH_BASE_URL = "https://world.taobao.com/search/search.htm"
-YAHOO_TW_SEARCH_BASE_URL = "https://tw.buy.yahoo.com/search/product"
 
-
-def build_buyee_yahoo_search_url(
-    keyword_jp: str,
-    affiliate_id: Optional[str] = None,
-    affiliate_base_url: Optional[str] = None,
-) -> str:
-    """
-    Construct Yahoo! Japan Auctions search URL via Buyee for the given Japanese keyword.
-    Base format: https://buyee.jp/item/search/query/<keyword_jp>
-    If affiliate_id is provided, appends '?af={affiliate_id}'.
-    If affiliate_base_url is provided (or configured in environment/settings),
-    wraps the target Yahoo! Auctions search URL with URL-encoding into the redirect tracking format:
-    '{affiliate_base_url}?t={url_encoded_buyee_yahoo_search_url}'.
-    """
-    clean_keyword = normalize_search_keyword(keyword_jp)
-    encoded_keyword = urllib.parse.quote(clean_keyword)
-    base_search_url = f"{BUYEE_YAHOO_SEARCH_BASE_URL}/{encoded_keyword}"
-
-    return append_affiliate_id(
-        base_search_url,
-        affiliate_id=affiliate_id,
-        affiliate_base_url=affiliate_base_url,
-    )
-
-
-def build_buyee_rakuten_search_url(
-    keyword_jp: str,
-    affiliate_id: Optional[str] = None,
-    affiliate_base_url: Optional[str] = None,
-) -> str:
-    """
-    Construct Rakuten Japan search URL via Buyee for the given Japanese keyword.
-    Applies alphanumeric space removal (e.g., 'Switch 2' -> 'Switch2', 'PS 5' -> 'PS5')
-    exclusively for Rakuten search indexing.
-    Base format: https://buyee.jp/rakuten/shopping/search/category/0?query=<keyword_jp>
-    If affiliate_id is provided, appends 'af={affiliate_id}'.
-    If affiliate_base_url is provided (or configured in environment/settings),
-    wraps the target Rakuten search URL with URL-encoding into the redirect tracking format:
-    '{affiliate_base_url}?t={url_encoded_buyee_rakuten_search_url}'.
-    """
-    clean_keyword = normalize_rakuten_search_keyword(keyword_jp)
-    encoded_keyword = urllib.parse.quote(clean_keyword)
-    base_search_url = f"{BUYEE_RAKUTEN_SEARCH_BASE_URL}?query={encoded_keyword}"
-
-    return append_affiliate_id(
-        base_search_url,
-        affiliate_id=affiliate_id,
-        affiliate_base_url=affiliate_base_url,
-    )
-
-
-def build_shopee_search_url(
-    keyword_zh: str,
-    shopee_affiliate_base_url: Optional[str] = None,
-) -> str:
-    """
-    Construct Shopee Taiwan search URL for the given Traditional Chinese keyword.
-    If shopee_affiliate_base_url is provided (or configured in environment/settings),
-    wraps the target Shopee search URL with URL-encoding into the redirect tracking format:
-    '{shopee_affiliate_base_url}?t={url_encoded_shopee_search_url}'.
-    """
-    clean_keyword = normalize_search_keyword(keyword_zh)
-    encoded = urllib.parse.quote(clean_keyword)
-    base_search_url = f"{SHOPEE_SEARCH_BASE_URL}?keyword={encoded}"
-
-    redirect_base = (
-        shopee_affiliate_base_url
-        or getattr(settings, "shopee_affiliate_base_url", None)
-        or os.getenv("SHOPEE_AFFILIATE_BASE_URL")
-    )
-    if redirect_base and redirect_base.strip():
-        base_clean = redirect_base.strip()
-        encoded_target = urllib.parse.quote(base_search_url, safe="")
-        separator = "&" if "?" in base_clean else "?"
-        return f"{base_clean}{separator}t={encoded_target}"
-
-    return base_search_url
-
-
-def build_taobao_search_url(
-    keyword_zh: Optional[str] = None,
-    taobao_affiliate_base_url: Optional[str] = None,
-) -> str:
-    """
-    Construct Taobao button URL.
-    Due to Taobao's lack of deep-linking support for search queries behind affiliate redirects,
-    this strictly returns the bare TAOBAO_AFFILIATE_BASE_URL without appending '?t=' or passing keyword_zh.
-    Falls back to TAOBAO_SEARCH_BASE_URL if no affiliate base URL is configured.
-    """
-    redirect_base = (
-        taobao_affiliate_base_url
-        or getattr(settings, "taobao_affiliate_base_url", None)
-        or os.getenv("TAOBAO_AFFILIATE_BASE_URL")
-    )
-    if redirect_base and redirect_base.strip():
-        return redirect_base.strip()
-
-    if keyword_zh:
-        clean_keyword = normalize_search_keyword(keyword_zh)
-        encoded = urllib.parse.quote(clean_keyword)
-        return f"{TAOBAO_SEARCH_BASE_URL}?q={encoded}"
-
-    return TAOBAO_SEARCH_BASE_URL
-
-
-def build_yahoo_tw_search_url(
-    keyword_zh: str,
-    yahoo_tw_affiliate_base_url: Optional[str] = None,
-) -> str:
-    """
-    Construct Yahoo Taiwan search URL for the given Traditional Chinese keyword.
-    Base format: https://tw.buy.yahoo.com/search/product?p=<keyword_zh>
-    If yahoo_tw_affiliate_base_url is provided (or configured in environment/settings),
-    wraps the target Yahoo Taiwan search URL with URL-encoding into the redirect tracking format:
-    '{yahoo_tw_affiliate_base_url}?t={url_encoded_yahoo_tw_search_url}'.
-    """
-    clean_keyword = normalize_search_keyword(keyword_zh)
-    encoded = urllib.parse.quote(clean_keyword)
-    base_search_url = f"{YAHOO_TW_SEARCH_BASE_URL}?p={encoded}"
-
-    redirect_base = (
-        yahoo_tw_affiliate_base_url
-        or getattr(settings, "yahoo_tw_affiliate_base_url", None)
-        or os.getenv("YAHOO_TW_AFFILIATE_BASE_URL")
-    )
-    if redirect_base and redirect_base.strip():
-        base_clean = redirect_base.strip()
-        encoded_target = urllib.parse.quote(base_search_url, safe="")
-        separator = "&" if "?" in base_clean else "?"
-        return f"{base_clean}{separator}t={encoded_target}"
-
-    return base_search_url
-
-
-def append_affiliate_id(
-    url: str,
-    affiliate_id: Optional[str] = None,
-    affiliate_base_url: Optional[str] = None,
-) -> str:
-    """
-    Construct the final destination URL with affiliate tracking:
-    1. If affiliate_id is provided, appends 'af={affiliate_id}' to the Buyee search URL.
-    2. If affiliate_base_url is provided (or configured in environment/settings),
-       wraps the target Buyee URL with URL-encoding into the redirect tracking format:
-       '{affiliate_base_url}?t={url_encoded_buyee_url}'.
-    """
-    if not url:
-        return url
-
-    target_url = url
-    if affiliate_id and affiliate_id.strip():
-        parsed = urllib.parse.urlparse(target_url)
-        query_params = urllib.parse.parse_qs(parsed.query)
-        # Buyee affiliate parameter
-        query_params["af"] = [affiliate_id.strip()]
-        new_query = urllib.parse.urlencode(query_params, doseq=True)
-        target_url = urllib.parse.urlunparse((
-            parsed.scheme,
-            parsed.netloc,
-            parsed.path,
-            parsed.params,
-            new_query,
-            parsed.fragment,
-        ))
-
-    base_redirect_url = affiliate_base_url or getattr(settings, "affiliate_base_url", None) or os.getenv("AFFILIATE_BASE_URL")
-    if base_redirect_url and base_redirect_url.strip():
-        base_clean = base_redirect_url.strip()
-        encoded_target = urllib.parse.quote(target_url, safe="")
-        separator = "&" if "?" in base_clean else "?"
-        return f"{base_clean}{separator}t={encoded_target}"
-
-    return target_url
+def _override_urls(platform_urls: Optional[Dict[str, str]], **urls: str) -> Tuple[str, ...]:
+    """比價結果已帶各平台搜尋連結時，以其取代卡片自行組出的連結（依平台名稱對應）。"""
+    platform_urls = platform_urls or {}
+    return tuple(platform_urls.get(name) or url for name, url in urls.items())
 
 
 def format_button_label(
@@ -266,6 +101,7 @@ def build_keyword_flex_message(
     taobao_min_price: Optional[Union[int, float, str]] = None,
     platform_min_prices: Optional[Dict[str, Any]] = None,
     enable_dynamic_buttons: Optional[bool] = None,
+    platform_urls: Optional[Dict[str, str]] = None,
 ) -> Dict[str, Any]:
     """
     Construct a LINE Flex Carousel containing 2 cards:
@@ -281,6 +117,10 @@ def build_keyword_flex_message(
     shopee_url = build_shopee_search_url(zh_kw, shopee_affiliate_base_url=shopee_affiliate_base_url)
     taobao_url = build_taobao_search_url(zh_kw, taobao_affiliate_base_url=taobao_affiliate_base_url)
     yahoo_tw_url = build_yahoo_tw_search_url(zh_kw, yahoo_tw_affiliate_base_url=yahoo_tw_affiliate_base_url)
+    final_buyee_url, yahoo_url, rakuten_url, shopee_url, taobao_url, yahoo_tw_url = _override_urls(
+        platform_urls, mercari=final_buyee_url, yahoo_jp=yahoo_url, rakuten=rakuten_url,
+        shopee=shopee_url, taobao=taobao_url, yahoo_tw=yahoo_tw_url,
+    )
 
     if platform_min_prices:
         mercari_min_price = mercari_min_price or platform_min_prices.get("mercari") or platform_min_prices.get("buyee")
@@ -596,6 +436,7 @@ def build_price_comparison_flex(
     taobao_min_price: Optional[Union[int, float, str]] = None,
     platform_min_prices: Optional[Dict[str, Any]] = None,
     enable_dynamic_buttons: Optional[bool] = None,
+    platform_urls: Optional[Dict[str, str]] = None,
 ) -> Dict[str, Any]:
     """
     Construct a rich LINE Flex Carousel comparing FB and cross-border market prices across:
@@ -643,6 +484,10 @@ def build_price_comparison_flex(
     shopee_url = build_shopee_search_url(clean_zh_kw, shopee_affiliate_base_url=shopee_affiliate_base_url)
     taobao_url = build_taobao_search_url(clean_zh_kw, taobao_affiliate_base_url=taobao_affiliate_base_url)
     yahoo_tw_url = build_yahoo_tw_search_url(clean_zh_kw, yahoo_tw_affiliate_base_url=yahoo_tw_affiliate_base_url)
+    final_buyee_url, yahoo_url, rakuten_url, shopee_url, taobao_url, yahoo_tw_url = _override_urls(
+        platform_urls, mercari=final_buyee_url, yahoo_jp=yahoo_url, rakuten=rakuten_url,
+        shopee=shopee_url, taobao=taobao_url, yahoo_tw=yahoo_tw_url,
+    )
 
     logger.info(
         f"[Price Comparison Flex URLs Constructed]\n"
@@ -1078,25 +923,15 @@ def build_price_comparison_flex(
 
 
 
-def _display_price(quote: PlatformQuote) -> Optional[Union[int, str]]:
-    if quote.min_price_twd is None:
-        return None
-    return f"{quote.min_price_twd}起" if quote.is_lower_bound else quote.min_price_twd
-
-
 def build_comparison_flex(result: ComparisonResult) -> Tuple[Dict[str, Any], str]:
     """
     將比價結果轉成 LINE Flex 卡片，回傳 (flex_dict, alt_text)。
     只負責呈現：平台順序與價格皆來自比價結果，分潤設定只影響連結。
     """
     common = dict(
-        **{f"{name}_min_price": _display_price(quote) for name, quote in result.platforms.items()},
+        **{f"{name}_min_price": quote.min_price_twd for name, quote in result.platforms.items()},
         enable_dynamic_buttons=True,
-        affiliate_id=settings.buyee_affiliate_id,
-        affiliate_base_url=settings.affiliate_base_url,
-        shopee_affiliate_base_url=settings.shopee_affiliate_base_url,
-        taobao_affiliate_base_url=settings.taobao_affiliate_base_url,
-        yahoo_tw_affiliate_base_url=settings.yahoo_tw_affiliate_base_url,
+        platform_urls={name: quote.search_url for name, quote in result.platforms.items()},
     )
 
     if result.is_full:
@@ -1113,7 +948,7 @@ def build_comparison_flex(result: ComparisonResult) -> Tuple[Dict[str, Any], str
     else:
         flex_dict = build_keyword_flex_message(
             japanese_keyword=result.keyword_jp,
-            search_url=result.search_url,
+            search_url=result.platforms["mercari"].search_url if "mercari" in result.platforms else "",
             item_title=result.product_name,
             keyword_zh=result.keyword_zh,
             perfected_keyword=result.keyword_zh if result.parsed_item else None,
@@ -1121,5 +956,6 @@ def build_comparison_flex(result: ComparisonResult) -> Tuple[Dict[str, Any], str
         )
         alt_text = "比價成功，來去撈便宜～"
 
-    flex_dict = inject_shopee_button_to_flex(flex_dict, result.platforms["shopee"].min_price_twd)
+    shopee = result.platforms.get("shopee")
+    flex_dict = inject_shopee_button_to_flex(flex_dict, shopee.min_price_twd if shopee else None)
     return flex_dict, alt_text

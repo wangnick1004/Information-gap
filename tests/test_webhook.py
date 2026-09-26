@@ -6,7 +6,8 @@ from fastapi.testclient import TestClient
 
 from main import app, settings
 from services.parser import ParsedItem
-from tests.fakes import FakeParser, fake_fetchers, generate_signature, pipeline_with, returning
+from services.platforms import FetchStatus
+from tests.fakes import FakeAdapter, FakeParser, failed, fake_platforms, found, generate_signature, pipeline_with
 
 client = TestClient(app)
 
@@ -295,7 +296,6 @@ def test_webhook_rich_menu_feedback_command(mock_messaging_api_class, mock_api_c
 def test_webhook_direct_keyword_search(mock_messaging_api_class, mock_api_client_class):
     """Test standard keyword search (such as menu button sending 'Switch 2') directly invokes search pipeline."""
     from services.parser import ParsedItem
-    from services.scraper import ScrapingResult
 
     mock_api = AsyncMock()
     mock_messaging_api_class.return_value = mock_api
@@ -310,15 +310,7 @@ def test_webhook_direct_keyword_search(mock_messaging_api_class, mock_api_client
         fb_price_twd=12000,
         is_anime_merch=True,
     ))
-    buyee = returning(ScrapingResult(
-        query="Switch 2",
-        search_url="https://buyee.jp/mercari/search?keyword=Switch2",
-        lowest_price_jpy=40000.0,
-        median_price_jpy=45000.0,
-        representative_image_url="https://example.com/switch2.jpg",
-        sample_prices=[40000.0, 45000.0, 50000.0],
-        total_found=3,
-    ))
+    mercari = found(40000.0, 45000.0, 50000.0, thumbnail='https://example.com/switch2.jpg')
 
     secret = "test_secret_123"
     token = "test_token_456"
@@ -346,7 +338,7 @@ def test_webhook_direct_keyword_search(mock_messaging_api_class, mock_api_client
     body_str = json.dumps(payload)
     signature = generate_signature(secret, body_str)
 
-    with patch("main.compare_prices", pipeline_with(parser, fake_fetchers(buyee=buyee))), \
+    with patch("main.compare_prices", pipeline_with(parser, fake_platforms(mercari=mercari))), \
          patch.object(settings, "line_channel_secret", secret), \
          patch.object(settings, "line_channel_access_token", token):
 
@@ -516,7 +508,6 @@ def test_webhook_string_normalization_and_silent_autocorrect(
     """Test that incoming message is normalized with .strip().lower(), LLM produces perfected_keyword, and search is executed silently with UX feedback indicator."""
     from linebot.v3.messaging import FlexMessage
     from services.parser import ParsedItem
-    from services.scraper import ScrapingResult
 
     mock_api = AsyncMock()
     mock_messaging_api_class.return_value = mock_api
@@ -533,15 +524,7 @@ def test_webhook_string_normalization_and_silent_autocorrect(
         fb_price_twd=8500,
         is_anime_merch=True,
     ))
-    buyee = returning(ScrapingResult(
-        query="Nintendo Switch",
-        search_url="https://buyee.jp/mercari/search?keyword=NintendoSwitch",
-        lowest_price_jpy=25000.0,
-        median_price_jpy=28000.0,
-        representative_image_url="https://example.com/switch.jpg",
-        sample_prices=[25000.0, 28000.0, 30000.0],
-        total_found=3,
-    ))
+    mercari = FakeAdapter(found(25000.0, 28000.0, 30000.0, thumbnail='https://example.com/switch.jpg'))
 
     secret = "test_secret_123"
     token = "test_token_456"
@@ -570,7 +553,7 @@ def test_webhook_string_normalization_and_silent_autocorrect(
     body_str = json.dumps(payload)
     signature = generate_signature(secret, body_str)
 
-    with patch("main.compare_prices", pipeline_with(parser, fake_fetchers(buyee=buyee))), \
+    with patch("main.compare_prices", pipeline_with(parser, fake_platforms(mercari=mercari))), \
          patch.object(settings, "line_channel_secret", secret), \
          patch.object(settings, "line_channel_access_token", token):
 
@@ -586,8 +569,8 @@ def test_webhook_string_normalization_and_silent_autocorrect(
     called_post_text = parser.calls[0]["post_text"]
     assert called_post_text == "switch"
 
-    # 2. Verify silent execution: scraper was directly called with perfected_keyword and top 15 items
-    assert buyee.calls == [(("Nintendo Switch",), {"max_items": 15})]
+    # 2. Verify silent execution: Mercari was searched directly with the AI keyword
+    assert mercari.calls == ["Nintendo Switch"]
 
     # 3. Verify reply_message sends a FlexMessage (no Quick Reply interception)
     mock_api.reply_message.assert_awaited_once()
@@ -618,7 +601,6 @@ def test_webhook_silent_autocorrect_even_on_zero_results(
     """Test that when search yields zero results, it still silently returns Flex Message with UX indicator instead of Quick Reply."""
     from linebot.v3.messaging import FlexMessage
     from services.parser import ParsedItem
-    from services.scraper import ScrapingResult
 
     mock_api = AsyncMock()
     mock_messaging_api_class.return_value = mock_api
@@ -636,15 +618,7 @@ def test_webhook_silent_autocorrect_even_on_zero_results(
     ))
 
     # Scraper returns zero results
-    buyee = returning(ScrapingResult(
-        query="Sony WH-1000XM5",
-        search_url="https://buyee.jp/mercari/search?keyword=test",
-        lowest_price_jpy=0.0,
-        median_price_jpy=0.0,
-        representative_image_url=None,
-        sample_prices=[],
-        total_found=0,
-    ))
+    mercari = failed(FetchStatus.NO_RESULTS)
 
     secret = "test_secret_123"
     token = "test_token_456"
@@ -672,7 +646,7 @@ def test_webhook_silent_autocorrect_even_on_zero_results(
     body_str = json.dumps(payload)
     signature = generate_signature(secret, body_str)
 
-    with patch("main.compare_prices", pipeline_with(parser, fake_fetchers(buyee=buyee))), \
+    with patch("main.compare_prices", pipeline_with(parser, fake_platforms(mercari=mercari))), \
          patch.object(settings, "line_channel_secret", secret), \
          patch.object(settings, "line_channel_access_token", token):
 
@@ -702,7 +676,6 @@ def test_webhook_normal_flex_when_no_suggestion(
     """Test that when input is accurate and specific (no suggested_term), normal Flex Message is returned."""
     from linebot.v3.messaging import FlexMessage
     from services.parser import ParsedItem
-    from services.scraper import ScrapingResult
 
     mock_api = AsyncMock()
     mock_messaging_api_class.return_value = mock_api
@@ -720,15 +693,7 @@ def test_webhook_normal_flex_when_no_suggestion(
         is_anime_merch=True,
     ))
 
-    buyee = returning(ScrapingResult(
-        query="Apple iPhone 15",
-        search_url="https://buyee.jp/mercari/search?keyword=iphone15",
-        lowest_price_jpy=95000.0,
-        median_price_jpy=100000.0,
-        representative_image_url="https://example.com/iphone15.jpg",
-        sample_prices=[95000.0, 100000.0, 105000.0],
-        total_found=3,
-    ))
+    mercari = found(95000.0, 100000.0, 105000.0, thumbnail='https://example.com/iphone15.jpg')
 
     secret = "test_secret_123"
     token = "test_token_456"
@@ -756,7 +721,7 @@ def test_webhook_normal_flex_when_no_suggestion(
     body_str = json.dumps(payload)
     signature = generate_signature(secret, body_str)
 
-    with patch("main.compare_prices", pipeline_with(parser, fake_fetchers(buyee=buyee))), \
+    with patch("main.compare_prices", pipeline_with(parser, fake_platforms(mercari=mercari))), \
          patch.object(settings, "line_channel_secret", secret), \
          patch.object(settings, "line_channel_access_token", token):
 
@@ -784,7 +749,6 @@ def test_webhook_concurrent_shopee_dispatch_and_ui_injection(
     and the returned Shopee price is correctly injected into the Flex Message UI button.
     """
     from services.parser import ParsedItem
-    from services.scraper import ScrapingResult
     from linebot.v3.messaging import FlexMessage
 
     mock_api = AsyncMock()
@@ -802,18 +766,10 @@ def test_webhook_concurrent_shopee_dispatch_and_ui_injection(
         is_anime_merch=True,
     ))
 
-    buyee = returning(ScrapingResult(
-        query="Nintendo Switch",
-        search_url="https://buyee.jp/mercari/search?keyword=Switch",
-        lowest_price_jpy=30000.0,
-        median_price_jpy=35000.0,
-        representative_image_url="https://example.com/switch.jpg",
-        sample_prices=[30000.0, 35000.0, 40000.0],
-        total_found=3,
-    ))
+    mercari = found(30000.0, 35000.0, 40000.0, thumbnail='https://example.com/switch.jpg')
 
-    shopee = returning(6990)
-    fetchers = fake_fetchers(buyee=buyee, rakuten=returning(7800), mercari=returning(7200), shopee=shopee)
+    shopee = FakeAdapter(found(6990.0, currency="TWD"))
+    platforms = fake_platforms(mercari=mercari, rakuten=found(37000.0), shopee=shopee)
 
     secret = "test_secret_shopee"
     token = "test_token_shopee"
@@ -841,7 +797,7 @@ def test_webhook_concurrent_shopee_dispatch_and_ui_injection(
     body_str = json.dumps(payload)
     signature = generate_signature(secret, body_str)
 
-    with patch("main.compare_prices", pipeline_with(parser, fetchers)), \
+    with patch("main.compare_prices", pipeline_with(parser, platforms)), \
          patch.object(settings, "line_channel_secret", secret), \
          patch.object(settings, "line_channel_access_token", token):
 
@@ -852,9 +808,9 @@ def test_webhook_concurrent_shopee_dispatch_and_ui_injection(
         )
         assert response.status_code == 200
 
-    # 1. Verify fetch_shopee_api_price was called with effective keyword
+    # 1. Verify the Shopee adapter was queried with the effective keyword
     assert len(shopee.calls) == 1
-    called_kw = shopee.calls[0][0][0]
+    called_kw = shopee.calls[0]
     assert "Switch" in called_kw
 
     # 2. Verify Flex Message contains injected Shopee price button
@@ -911,7 +867,6 @@ def test_webhook_all_platforms_fail_shows_no_price_numbers(
 ):
     """When every platform fails, the reply must offer links only — never any price number."""
     from services.parser import ParsedItem
-    from services.scraper import ScrapingError
 
     mock_api = AsyncMock()
     mock_messaging_api_class.return_value = mock_api
@@ -926,10 +881,8 @@ def test_webhook_all_platforms_fail_shows_no_price_numbers(
         perfected_keyword="藍牙耳機",
         fb_price_twd=None,
     ))
-    fetchers = fake_fetchers(
-        buyee=returning(ScrapingError("blocked")),
-        taiwanese=returning(ScrapingError("blocked")),
-        chinese=returning(ScrapingError("blocked")),
+    platforms = fake_platforms(
+        mercari=failed(FetchStatus.BLOCKED),
     )
 
     secret = "test_secret_allfail"
@@ -950,7 +903,7 @@ def test_webhook_all_platforms_fail_shows_no_price_numbers(
     }
     body_str = json.dumps(payload)
 
-    with patch("main.compare_prices", pipeline_with(parser, fetchers)), \
+    with patch("main.compare_prices", pipeline_with(parser, platforms)), \
          patch.object(settings, "line_channel_secret", secret), \
          patch.object(settings, "line_channel_access_token", "test_token_allfail"):
         response = client.post(

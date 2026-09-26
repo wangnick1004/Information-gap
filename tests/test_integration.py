@@ -7,8 +7,8 @@ from linebot.v3.messaging import FlexMessage, TextMessage
 
 from main import app, settings
 from services.parser import ParsedItem, parse_fb_post
-from services.scraper import ScrapingError, ScrapingResult, ScrapingTimeoutError
-from tests.fakes import FakeParser, fake_fetchers, generate_signature, pipeline_with, returning
+from services.platforms import FetchStatus
+from tests.fakes import FakeParser, failed, fake_platforms, found, generate_signature, pipeline_with
 
 client = TestClient(app)
 
@@ -83,15 +83,7 @@ def test_end_to_end_pipeline_success(
         is_anime_merch=True,
     ))
 
-    buyee = returning(ScrapingResult(
-        query="ハイキュー 影山 もちもちマスコット 2020",
-        search_url="https://buyee.jp/mercari/search?keyword=test",
-        lowest_price_jpy=1200.0,
-        median_price_jpy=1500.0,
-        representative_image_url="https://static.mercdn.net/item/detail/orig/photos/m1.jpg",
-        sample_prices=[1200.0, 1500.0, 1800.0],
-        total_found=3,
-    ))
+    mercari = found(1200.0, 1500.0, 1800.0, thumbnail='https://static.mercdn.net/item/detail/orig/photos/m1.jpg')
 
     secret = "secret_integration_test"
     token = "token_integration_test"
@@ -99,7 +91,7 @@ def test_end_to_end_pipeline_success(
     body_str = create_line_text_payload(post_text)
     signature = generate_signature(secret, body_str)
 
-    with patch("main.compare_prices", pipeline_with(parser, fake_fetchers(buyee=buyee))), \
+    with patch("main.compare_prices", pipeline_with(parser, fake_platforms(mercari=mercari))), \
          patch.object(settings, "line_channel_secret", secret), \
          patch.object(settings, "line_channel_access_token", token), \
          patch.object(settings, "buyee_affiliate_id", "aff_tag_123"):
@@ -145,15 +137,7 @@ def test_end_to_end_pipeline_with_affiliate_base_url(
         is_anime_merch=True,
     ))
 
-    buyee = returning(ScrapingResult(
-        query="Sony WH-1000XM5 ヘッドホン",
-        search_url="https://buyee.jp/mercari/search?keyword=Sony%20WH-1000XM5",
-        lowest_price_jpy=28000.0,
-        median_price_jpy=32000.0,
-        representative_image_url="https://static.mercdn.net/item/detail/orig/photos/sony.jpg",
-        sample_prices=[28000.0, 32000.0],
-        total_found=2,
-    ))
+    mercari = found(28000.0, 32000.0, thumbnail='https://static.mercdn.net/item/detail/orig/photos/sony.jpg')
 
     secret = "secret_integration_test"
     token = "token_integration_test"
@@ -165,7 +149,7 @@ def test_end_to_end_pipeline_with_affiliate_base_url(
     shopee_aff_base = "https://affiliate.shopee.example.com/click"
     taobao_aff_base = "https://affiliate.taobao.example.com/click"
     yahoo_tw_aff_base = "https://affiliate.yahoo-tw.example.com/click"
-    with patch("main.compare_prices", pipeline_with(parser, fake_fetchers(buyee=buyee))), \
+    with patch("main.compare_prices", pipeline_with(parser, fake_platforms(mercari=mercari))), \
          patch.object(settings, "line_channel_secret", secret), \
          patch.object(settings, "line_channel_access_token", token), \
          patch.object(settings, "buyee_affiliate_id", "aff_123"), \
@@ -269,22 +253,14 @@ def test_end_to_end_image_message_success(
         is_anime_merch=True,
     ))
 
-    buyee = returning(ScrapingResult(
-        query="Sony WH-1000XM5 ヘッドホン",
-        search_url="https://buyee.jp/mercari/search?keyword=Sony%20WH-1000XM5",
-        lowest_price_jpy=28000.0,
-        median_price_jpy=32000.0,
-        representative_image_url="https://static.mercdn.net/item/detail/orig/photos/sony.jpg",
-        sample_prices=[28000.0, 32000.0, 35000.0],
-        total_found=3,
-    ))
+    mercari = found(28000.0, 32000.0, 35000.0, thumbnail='https://static.mercdn.net/item/detail/orig/photos/sony.jpg')
 
     secret = "secret_integration_test"
     token = "token_integration_test"
     body_str = create_line_image_payload("img_12345")
     signature = generate_signature(secret, body_str)
 
-    with patch("main.compare_prices", pipeline_with(parser, fake_fetchers(buyee=buyee))), \
+    with patch("main.compare_prices", pipeline_with(parser, fake_platforms(mercari=mercari))), \
          patch.object(settings, "line_channel_secret", secret), \
          patch.object(settings, "line_channel_access_token", token):
 
@@ -391,18 +367,14 @@ def test_end_to_end_scraper_timeout_fallback(
         fb_price_twd=8000,
         is_anime_merch=True,
     ))
-    buyee = returning(ScrapingTimeoutError(
-        "Timeout",
-        search_url="https://buyee.jp/mercari/search?keyword=Sony%20WH-1000XM5",
-        query="Sony WH-1000XM5",
-    ))
+    mercari = failed(FetchStatus.TIMEOUT)
 
     secret = "secret_integration_test"
     token = "token_integration_test"
     body_str = create_line_text_payload("售 Sony WH-1000XM5 8000")
     signature = generate_signature(secret, body_str)
 
-    with patch("main.compare_prices", pipeline_with(parser, fake_fetchers(buyee=buyee))), \
+    with patch("main.compare_prices", pipeline_with(parser, fake_platforms(mercari=mercari))), \
          patch.object(settings, "line_channel_secret", secret), \
          patch.object(settings, "line_channel_access_token", token):
 
@@ -441,18 +413,14 @@ def test_end_to_end_scraper_error_fallback(
         fb_price_twd=300,
         is_anime_merch=True,
     ))
-    buyee = returning(ScrapingError(
-        "No listings found",
-        search_url="https://buyee.jp/mercari/search?keyword=test",
-        query="test",
-    ))
+    mercari = failed(FetchStatus.BLOCKED)
 
     secret = "secret_integration_test"
     token = "token_integration_test"
     body_str = create_line_text_payload("售 鬼滅 炭治郎 徽章 300")
     signature = generate_signature(secret, body_str)
 
-    with patch("main.compare_prices", pipeline_with(parser, fake_fetchers(buyee=buyee))), \
+    with patch("main.compare_prices", pipeline_with(parser, fake_platforms(mercari=mercari))), \
          patch.object(settings, "line_channel_secret", secret), \
          patch.object(settings, "line_channel_access_token", token):
 

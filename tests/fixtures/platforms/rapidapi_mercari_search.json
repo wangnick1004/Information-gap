@@ -1,0 +1,131 @@
+{
+ "listings": [
+  {
+   "id": "supreme-cat-in-the-hat-t-shirt-yellow-fw18t5-yellow",
+   "platform": "goat",
+   "title": "Supreme Cat In The Hat T-Shirt 'Yellow'",
+   "price": 127,
+   "currency": "USD",
+   "brand": "Supreme",
+   "images": [
+    "https://image.goat.com/attachments/product_template_pictures/images/080/807/289/original/586660_00.png.png"
+   ],
+   "url": "https://www.goat.com/sneakers/supreme-cat-in-the-hat-t-shirt-yellow-fw18t5-yellow",
+   "seller": {
+    "id": "goat",
+    "username": "GOAT"
+   },
+   "category": "tops"
+  },
+  {
+   "id": "rhude-dimora-tee-vintage-black-ps24tt04012610",
+   "platform": "goat",
+   "title": "Rhude Dimora Tee 'Vintage Black'",
+   "price": 0,
+   "currency": "USD",
+   "brand": "Rhude",
+   "images": [
+    "https://image.goat.com/attachments/product_template_pictures/images/109/196/007/original/1241433_00.png.png"
+   ],
+   "url": "https://www.goat.com/sneakers/rhude-dimora-tee-vintage-black-ps24tt04012610",
+   "seller": {
+    "id": "goat",
+    "username": "GOAT"
+   },
+   "category": "tops"
+  },
+  {
+   "id": "supreme-pound-tee-yellow-fw23t18-yellow",
+   "platform": "goat",
+   "title": "Supreme Pound Tee 'Yellow'",
+   "price": 109,
+   "currency": "USD",
+   "brand": "Supreme",
+   "images": [
+    "https://image.goat.com/attachments/product_template_pictures/images/093/936/089/original/1298706_00.png.png"
+   ],
+   "url": "https://www.goat.com/sneakers/supreme-pound-tee-yellow-fw23t18-yellow",
+   "seller": {
+    "id": "goat",
+    "username": "GOAT"
+   },
+   "category": "tops"
+  },
+  {
+   "id": "v1|357888273105|626328582542",
+   "platform": "ebay",
+   "title": "Nintendo Switch Gaming Console 32GB + 1 Year Warranty 🛡️ | 2-Day Shipping! 📦✈️",
+   "price": 199.99,
+   "currency": "USD",
+   "condition": "Very Good - Refurbished",
+   "images": [
+    "https://i.ebayimg.com/images/g/m8EAAeSwPMBpFh4r/s-l225.jpg",
+    "https://i.ebayimg.com/images/g/d1EAAeSwa6VpFh4s/s-l225.jpg"
+   ],
+   "url": "https://www.ebay.com/itm/357888273105?_skw=Nintendo+Switch&hash=item5353cdaad1:g:m8EAAeSwPMBpFh4r",
+   "seller": {
+    "username": "endeardistributors",
+    "url": "https://www.ebay.com/usr/endeardistributors"
+   }
+  },
+  {
+   "id": "v1|407184226524|0",
+   "platform": "ebay",
+   "title": "Nintendo Switch Wireless Pro Controller - Black",
+   "price": 33.98,
+   "currency": "USD",
+   "condition": "New",
+   "images": [
+    "https://i.ebayimg.com/images/g/hRkAAeSw2rZqlkRf/s-l225.jpg",
+    "https://i.ebayimg.com/images/g/SHgAAeSwGDJqlkRf/s-l225.jpg",
+    "https://i.ebayimg.com/images/g/j0wAAeSw3h9qlkRe/s-l225.jpg",
+    "https://i.ebayimg.com/images/g/x4MAAeSw61RqlkRf/s-l225.jpg"
+   ],
+   "url": "https://www.ebay.com/itm/407184226524?_skw=Nintendo+Switch&hash=item5ece1238dc:g:hRkAAeSw2rZqlkRf&amdata=enc%3AAQALAAAA8ACCtXRWQnOEpyOqnQQ8KGamKaF3XYsc%2Bag%2FsQ6I%2Fakz3ydWwIuZuWK6SmtzReHOArzR3qcvoajeeXknMDVHIIJfbtb5t1VcBTW76tZYG27jAtO1gUiY6%2BSYLXO6Tqyy90K5Kh6%2BULdC1UO5hnqsV9pJvRDN%2F9hiiwraVxEL1SyY1mtAUfA7ctvITGHrD71jRc0qa5D0XfgwNFvONTUpGAf7Gm72bNtYTV%2FicqsNGm2ESa1SbMYJXam%2BuB88N4E%2FdUXuanLx%2Bj3zKc577J3xuVTsaAC43uLljnDB1ToO3YeSo%2F5p%2FMVe2fyblifv1vDm1g%3D%3D",
+   "seller": {
+    "username": "kesran32",
+    "url": "https://www.ebay.com/usr/kesran32"
+   }
+  },
+  {
+   "id": "v1|117419026898|0",
+   "platform": "ebay",
+   "title": "Nintendo Switch Console Screen TV Dock Station Charging Base Station HAC-007",
+   "price": 29.99,
+   "currency": "USD",
+   "condition": "Open box",
+   "images": [
+    "https://i.ebayimg.com/images/g/THEAAOSw38VoCUvw/s-l225.jpg"
+   ],
+   "url": "https://www.ebay.com/itm/117419026898?_skw=Nintendo+Switch&hash=item1b56b829d2:g:THEAAOSw38VoCUvw&amdata=enc%3AAQALAAAA8ACCtXRWQnOEpyOqnQQ8KGZz3YpC95xILfrdm30Xpmt5MmizB1D7urHV5BzeY5oxz0fNXJayJNyZSV3%2Bm7dbNbaw8GeWCv7dED1oz6jEqwgDDvQK6uGfSEHlV221gKPz0TXOT6jdELZg3I9XdX2j%2FN43ZxNsPSJDeIPnCcqEBnJOgSOKPwIBjiNc1IXss2o6KZd9JqMegrXHrqcAfFist8e%2FOJNMTMkxHnTy3dfg8837CIDoUdmzrFpO1uQ2Kd%2BLlICRvcALNcaekjlYwoCFZAw%2BNNNTcsyO4yhHqjVpYKI6maKZq3Ua1hIEbPv67s4u1g%3D%3D",
+   "seller": {
+    "username": "gamerepublic",
+    "url": "https://www.ebay.com/usr/gamerepublic"
+   }
+  }
+ ],
+ "total_count": 123,
+ "page": 1,
+ "per_page": 20,
+ "platforms_searched": [
+  "depop",
+  "ebay",
+  "goat",
+  "grailed",
+  "mercari",
+  "poshmark",
+  "stockx"
+ ],
+ "errors": [
+  {
+   "platform": "stockx",
+   "message": "platform temporarily unavailable"
+  }
+ ],
+ "search_metadata": {
+  "query": "Nintendo Switch",
+  "search_time_ms": 2640,
+  "scraped_at": "2026-09-26T12:53:22Z"
+ },
+ "_recorded": "2026-09-26 GET https://fashion-resale-api.p.rapidapi.com/search?q=Nintendo%20Switch&platform=mercari (HTTP 200)；原始 20 筆只保留 6 筆。注意：回傳的全是 goat/ebay，沒有任何 mercari 商品"
+}

@@ -28,6 +28,8 @@ class Settings(BaseSettings):
     shopee_api_url: Optional[str] = Field(default=None, alias="SHOPEE_API_URL")
     serpapi_key: Optional[str] = Field(default=None, alias="SERPAPI_KEY")
     third_party_api_token: Optional[str] = Field(default=None, alias="THIRD_PARTY_API_TOKEN")
+    # 評測模式：啟用付費第三方 API（RapidAPI）轉接器；正式服務維持關閉
+    evaluation_mode: bool = Field(default=False, alias="EVALUATION_MODE")
 
     model_config = SettingsConfigDict(
         env_file=".env",

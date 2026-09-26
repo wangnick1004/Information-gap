@@ -581,17 +581,16 @@ def _links_only_result(**platform_prices):
     from services.comparison import ComparisonResult, PlatformQuote, PlatformStatus
 
     platforms = {
-        name: PlatformQuote(status=PlatformStatus.NO_MATCH)
+        name: PlatformQuote(status=PlatformStatus.NO_MATCH, search_url=f"https://example.com/{name}")
         for name in ("mercari", "yahoo_jp", "rakuten", "shopee", "yahoo_tw", "taobao")
     }
-    for name, (price, lower_bound) in platform_prices.items():
-        platforms[name] = PlatformQuote(PlatformStatus.OK, price, is_lower_bound=lower_bound)
+    for name, price in platform_prices.items():
+        platforms[name] = PlatformQuote(PlatformStatus.OK, price, search_url=f"https://example.com/{name}")
     return ComparisonResult(
         query_text="藍牙耳機",
         product_name="藍牙耳機",
         keyword_zh="藍牙耳機",
         keyword_jp="ワイヤレスイヤホン",
-        search_url="https://buyee.jp/mercari/search?keyword=x",
         platforms=platforms,
         fetched_at=datetime(2026, 10, 1, tzinfo=timezone.utc),
     )
@@ -610,11 +609,11 @@ def test_build_comparison_flex_shows_platform_prices_from_result():
     from services.flex_builder import build_comparison_flex
 
     flex_dict, alt_text = build_comparison_flex(
-        _links_only_result(mercari=(2969, True), rakuten=(3837, False), shopee=(6990, False))
+        _links_only_result(mercari=2969, rakuten=3837, shopee=6990)
     )
 
     labels = _button_labels(flex_dict)
-    assert "Mercari (約 NT$2969起)" in labels
+    assert "Mercari (約 NT$2969)" in labels
     assert "日本樂天 (約 NT$3837)" in labels
     assert "台灣蝦皮 (約 NT$6990)" in labels
     assert "淘寶 (點擊查看)" in labels
@@ -628,3 +627,22 @@ def test_build_comparison_flex_without_prices_shows_links_only():
     flex_dict, _ = build_comparison_flex(_links_only_result())
 
     assert all(label.endswith("(點擊查看)") for label in _button_labels(flex_dict))
+
+
+def _button_uris(flex_dict):
+    return [
+        c["action"]["uri"]
+        for card in flex_dict["contents"]
+        for c in card["footer"]["contents"]
+        if c.get("type") == "button"
+    ]
+
+
+def test_build_comparison_flex_uses_search_links_from_result():
+    from services.flex_builder import build_comparison_flex
+
+    flex_dict, _ = build_comparison_flex(_links_only_result(rakuten=3837))
+
+    assert set(_button_uris(flex_dict)) >= {
+        f"https://example.com/{name}" for name in ("mercari", "yahoo_jp", "rakuten", "shopee", "yahoo_tw", "taobao")
+    }

@@ -58,13 +58,13 @@ async def test_prewarm_search_cache():
     from services.cache import search_cache
     from services.comparison import compare_prices
     from services.parser import ParsedItem
-    from tests.fakes import FakeParser, buyee_result, fake_fetchers, pipeline_with, returning
+    from tests.fakes import FakeParser, fake_platforms, found, pipeline_with
 
     search_cache.clear()
     parser = FakeParser(ParsedItem(keyword_zh="Switch 2", keyword_jp="Switch 2"))
-    fetchers = fake_fetchers(buyee=returning(buyee_result()))
+    platforms = fake_platforms(mercari=found(30000.0, 35000.0, 40000.0))
 
-    with patch("main.compare_prices", pipeline_with(parser, fetchers)):
+    with patch("main.compare_prices", pipeline_with(parser, platforms)):
         await prewarm_search_cache()
 
     assert len(parser.calls) == len(PREWARM_KEYWORDS)
@@ -80,13 +80,13 @@ async def test_prewarm_does_not_cache_failed_comparisons():
     from main import prewarm_search_cache
     from services.cache import search_cache
     from services.parser import ParsedItem
-    from services.scraper import ScrapingTimeoutError
-    from tests.fakes import FakeParser, fake_fetchers, pipeline_with, returning
+    from services.platforms import FetchStatus
+    from tests.fakes import FakeParser, failed, fake_platforms, pipeline_with
 
     search_cache.clear()
-    fetchers = fake_fetchers(buyee=returning(ScrapingTimeoutError("slow")))
+    platforms = fake_platforms(mercari=failed(FetchStatus.TIMEOUT))
 
-    with patch("main.compare_prices", pipeline_with(FakeParser(ParsedItem(keyword_zh="x")), fetchers)):
+    with patch("main.compare_prices", pipeline_with(FakeParser(ParsedItem(keyword_zh="x")), platforms)):
         await prewarm_search_cache()
 
     assert len(search_cache) == 0

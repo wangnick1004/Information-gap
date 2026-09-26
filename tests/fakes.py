@@ -1,13 +1,13 @@
-"""測試用假依賴：替換比價流程入口的 AI 解析器與平台抓價函式（不碰網路）。"""
+"""測試用假依賴：替換比價流程入口的 AI 解析器與平台轉接器（不碰網路）。"""
 
 import base64
 import functools
 import hashlib
 import hmac
-from types import SimpleNamespace
+from dataclasses import replace
 
-from services.comparison import PlatformFetchers, compare_prices
-from services.scraper import ScrapingResult
+from services.comparison import compare_prices
+from services.platforms import FetchResult, FetchStatus, Listing, build_platforms
 
 
 class FakeParser:
@@ -23,50 +23,53 @@ class FakeParser:
         return self.result
 
 
-def returning(value):
-    """回傳固定值（或拋出例外）的假非同步函式，並記錄呼叫參數於 .calls。"""
-    calls = []
+class FakeAdapter:
+    """假平台轉接器：回傳固定的 FetchResult（或拋出例外），並記錄查詢關鍵字於 .calls。"""
 
-    async def fake(*args, **kwargs):
-        calls.append((args, kwargs))
-        if isinstance(value, BaseException):
-            raise value
-        return value
+    def __init__(self, result):
+        self.result = result
+        self.calls = []
 
-    fake.calls = calls
-    return fake
-
-
-def buyee_result(sample_prices=(30000.0, 35000.0, 40000.0), search_url="https://buyee.jp/mercari/search?keyword=Switch"):
-    prices = sorted(sample_prices)
-    return ScrapingResult(
-        query="query",
-        search_url=search_url,
-        lowest_price_jpy=prices[0] if prices else 0.0,
-        median_price_jpy=prices[len(prices) // 2] if prices else 0.0,
-        representative_image_url=None,
-        sample_prices=list(sample_prices),
-        total_found=len(prices),
-    )
+    async def search(self, keyword, timeout):
+        self.calls.append(keyword)
+        if isinstance(self.result, BaseException):
+            raise self.result
+        return self.result
 
 
-def fake_fetchers(**overrides):
-    """預設所有平台都「查無價格」。"""
-    fields = dict(
-        buyee=returning(buyee_result(sample_prices=())),
-        taiwanese=returning(SimpleNamespace(sample_prices=[])),
-        chinese=returning(SimpleNamespace(sample_prices=[])),
-        rakuten=returning(None),
-        mercari=returning(None),
-        shopee=returning(None),
-    )
-    fields.update(overrides)
-    return PlatformFetchers(**fields)
+def found(*prices, currency="JPY", thumbnail=None):
+    return FetchResult(FetchStatus.OK, tuple(
+        Listing(title=f"item {i}", price=price, currency=currency, url=f"https://example.com/{i}", thumbnail_url=thumbnail)
+        for i, price in enumerate(prices)
+    ))
 
 
-def pipeline_with(parser, fetchers=None):
+def failed(status):
+    return FetchResult(status)
+
+
+def fake_platforms(evaluation_mode=False, **adapters):
+    """
+    真實的平台集合，但轉接器換成假的。未指定的平台：有轉接器者一律「查無結果」，無轉接器者維持僅連結。
+    指定值可為 FetchResult、例外或 FakeAdapter；也可替僅連結的平台（例如蝦皮）掛上假轉接器。
+    """
+    platforms = build_platforms(evaluation_mode=evaluation_mode)
+    fakes = {}
+    for name, platform in platforms.items():
+        if name in adapters:
+            given = adapters[name]
+            adapter = given if isinstance(given, FakeAdapter) else FakeAdapter(given)
+        elif platform.adapter is not None:
+            adapter = FakeAdapter(FetchResult(FetchStatus.NO_RESULTS))
+        else:
+            adapter = None
+        fakes[name] = replace(platform, adapter=adapter)
+    return fakes
+
+
+def pipeline_with(parser, platforms=None):
     """真實的比價流程入口，但換上假 AI 與假平台；用來 patch main.compare_prices。"""
-    return functools.partial(compare_prices, parser=parser, fetchers=fetchers or fake_fetchers())
+    return functools.partial(compare_prices, parser=parser, platforms=platforms or fake_platforms())
 
 
 def generate_signature(secret: str, body: str) -> str:

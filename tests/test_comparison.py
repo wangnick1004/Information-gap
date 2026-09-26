@@ -1,21 +1,26 @@
-"""比價流程入口（services.comparison.compare_prices）的測試：只換外部依賴（AI、平台、時鐘、快取）。"""
+"""比價流程入口（services.comparison.compare_prices）的測試：只換外部依賴（AI、平台轉接器、時鐘、快取）。"""
 
 from datetime import datetime, timezone
-from types import SimpleNamespace
 
 import pytest
 
 from services.cache import TTLCache
 from services.comparison import GEMINI_VISION_PROMPT, PlatformStatus, compare_prices
 from services.parser import GeminiServerError, IrrelevantPostError, ParsedItem
-from services.scraper import ScrapingError, ScrapingTimeoutError
-from tests.fakes import FakeParser, buyee_result, fake_fetchers, returning
+from services.platforms import FetchStatus
+from services.pricing import convert_to_twd
+from tests.fakes import FakeAdapter, FakeParser, failed, fake_platforms, found
 
 FIXED_NOW = datetime(2026, 10, 1, 12, 0, tzinfo=timezone.utc)
+LINK_ONLY_PLATFORMS = ("yahoo_jp", "yahoo_tw", "taobao")
 
 
 def fixed_clock():
     return FIXED_NOW
+
+
+def jpy_to_twd(price):
+    return int(round(convert_to_twd(price, currency="JPY")))
 
 
 def switch_item(**overrides):
@@ -33,12 +38,23 @@ def switch_item(**overrides):
     return ParsedItem(**fields)
 
 
-async def run(text=None, image=None, parser=None, fetchers=None, cache=None):
+@pytest.fixture
+def no_affiliates(monkeypatch):
+    from config import settings
+
+    for name in ("buyee_affiliate_id", "affiliate_base_url", "shopee_affiliate_base_url",
+                 "taobao_affiliate_base_url", "yahoo_tw_affiliate_base_url"):
+        monkeypatch.setattr(settings, name, None)
+    for name in ("AFFILIATE_BASE_URL", "SHOPEE_AFFILIATE_BASE_URL", "TAOBAO_AFFILIATE_BASE_URL", "YAHOO_TW_AFFILIATE_BASE_URL"):
+        monkeypatch.delenv(name, raising=False)
+
+
+async def run(text=None, image=None, parser=None, platforms=None, cache=None):
     return await compare_prices(
         text=text,
         image=image,
         parser=parser or FakeParser(switch_item()),
-        fetchers=fetchers or fake_fetchers(),
+        platforms=platforms or fake_platforms(),
         clock=fixed_clock,
         cache=cache if cache is not None else TTLCache(),
     )
@@ -46,42 +62,60 @@ async def run(text=None, image=None, parser=None, fetchers=None, cache=None):
 
 @pytest.mark.anyio
 async def test_success_returns_prices_per_platform_and_keywords():
-    fetchers = fake_fetchers(
-        buyee=returning(buyee_result()),
-        taiwanese=returning(SimpleNamespace(sample_prices=[9000.0])),
-        rakuten=returning(7800),
-        mercari=returning(7200),
-        shopee=returning(6990),
+    platforms = fake_platforms(
+        mercari=found(30000.0, 35000.0, 40000.0),
+        rakuten=found(37000.0),
+        shopee=found(6990.0, currency="TWD"),
     )
-    result = await run(text="switch oled", fetchers=fetchers)
+    result = await run(text="switch oled", platforms=platforms)
 
     assert result.product_name == "Nintendo Switch OLED"
     assert result.keyword_zh == "Nintendo Switch OLED"
     assert result.keyword_jp == "Nintendo Switch"
-    assert result.search_url == "https://buyee.jp/mercari/search?keyword=Switch"
     assert result.fetched_at == FIXED_NOW
     assert result.from_cache is False
 
-    assert result.platforms["shopee"].status is PlatformStatus.OK
+    assert list(result.platforms) == ["mercari", "yahoo_jp", "rakuten", "shopee", "yahoo_tw", "taobao"]
+    assert result.platforms["mercari"].status is PlatformStatus.OK
+    assert result.platforms["mercari"].min_price_twd == jpy_to_twd(30000.0)
+    assert result.platforms["rakuten"].min_price_twd == jpy_to_twd(37000.0)
     assert result.platforms["shopee"].min_price_twd == 6990
-    assert result.platforms["rakuten"].min_price_twd == 7800
-    assert result.platforms["mercari"].min_price_twd == 7200
-    assert result.platforms["mercari"].is_lower_bound is True
-    assert result.platforms["yahoo_tw"].min_price_twd == 9000
-    assert result.platforms["taobao"].status is PlatformStatus.NO_MATCH
-    assert result.platforms["taobao"].min_price_twd is None
+    for name in LINK_ONLY_PLATFORMS:
+        assert result.platforms[name].status is PlatformStatus.LINK_ONLY
+        assert result.platforms[name].min_price_twd is None
 
 
 @pytest.mark.anyio
-async def test_searches_with_ai_keywords_not_raw_text():
-    buyee = returning(buyee_result())
-    shopee = returning(None)
+async def test_every_platform_carries_its_search_link(no_affiliates):
+    result = await run(text="switch")
+
+    assert result.platforms["mercari"].search_url == "https://buyee.jp/mercari/search?keyword=NINTENDO%20SWITCH"
+    assert result.platforms["rakuten"].search_url.startswith("https://buyee.jp/rakuten/shopping/search/")
+    assert result.platforms["yahoo_jp"].search_url == "https://buyee.jp/item/search/query/NINTENDO%20SWITCH"
+    assert result.platforms["shopee"].search_url == "https://shopee.tw/search?keyword=NINTENDO%20SWITCH%20OLED"
+    assert result.platforms["yahoo_tw"].search_url.startswith("https://tw.buy.yahoo.com/search/product?p=")
+
+
+@pytest.mark.anyio
+async def test_search_links_include_affiliate_parameters(no_affiliates, monkeypatch):
+    from config import settings
+
+    monkeypatch.setattr(settings, "buyee_affiliate_id", "aff_tag_123")
+    result = await run(text="switch")
+
+    assert "af=aff_tag_123" in result.platforms["mercari"].search_url
+    assert "af=aff_tag_123" in result.platforms["rakuten"].search_url
+
+
+@pytest.mark.anyio
+async def test_searches_each_platform_with_its_language_keyword():
+    mercari, shopee = FakeAdapter(failed(FetchStatus.NO_RESULTS)), FakeAdapter(failed(FetchStatus.NO_RESULTS))
     parser = FakeParser(switch_item())
-    await run(text="switch", parser=parser, fetchers=fake_fetchers(buyee=buyee, shopee=shopee))
+    await run(text="switch", parser=parser, platforms=fake_platforms(mercari=mercari, shopee=shopee))
 
     assert parser.calls == [dict(post_text="switch", image_data=None, vision_prompt=None)]
-    assert buyee.calls == [(("Nintendo Switch",), {"max_items": 15})]
-    assert shopee.calls[0][0][0] == "Nintendo Switch OLED"
+    assert mercari.calls == ["Nintendo Switch"]
+    assert shopee.calls == ["Nintendo Switch OLED"]
 
 
 @pytest.mark.anyio
@@ -104,51 +138,84 @@ async def test_requires_exactly_one_of_text_or_image():
 
 @pytest.mark.anyio
 async def test_partial_platform_failure_keeps_other_prices():
-    fetchers = fake_fetchers(
-        buyee=returning(buyee_result()),
-        rakuten=returning(ScrapingTimeoutError("slow")),
-        mercari=returning(RuntimeError("boom")),
-        shopee=returning(6990),
+    platforms = fake_platforms(
+        mercari=failed(FetchStatus.BLOCKED),
+        rakuten=failed(FetchStatus.TIMEOUT),
+        shopee=found(6990.0, currency="TWD"),
     )
-    result = await run(text="switch", fetchers=fetchers)
+    result = await run(text="switch", platforms=platforms)
 
     assert result.platforms["shopee"].min_price_twd == 6990
     assert result.platforms["rakuten"].status is PlatformStatus.TIMEOUT
     assert result.platforms["rakuten"].min_price_twd is None
-    # Mercari API 失敗時仍以 Buyee 抓到的價格補上
-    assert result.platforms["mercari"].status is PlatformStatus.OK
-    assert result.platforms["mercari"].is_lower_bound is False
+    assert result.platforms["mercari"].status is PlatformStatus.FAILED
+    assert result.platforms["mercari"].min_price_twd is None
 
 
 @pytest.mark.anyio
-async def test_buyee_failure_falls_back_to_links_and_keeps_fetched_prices():
-    rakuten = returning(3837)
-    fetchers = fake_fetchers(
-        buyee=returning(ScrapingTimeoutError("slow", search_url="https://buyee.jp/x")),
-        rakuten=rakuten,
-    )
-    result = await run(text="viscaria", fetchers=fetchers)
+async def test_adapter_raising_does_not_affect_other_platforms():
+    platforms = fake_platforms(mercari=RuntimeError("boom"), rakuten=found(37000.0))
+    result = await run(text="switch", platforms=platforms)
+
+    assert result.platforms["mercari"].status is PlatformStatus.FAILED
+    assert result.platforms["rakuten"].min_price_twd == jpy_to_twd(37000.0)
+
+
+@pytest.mark.anyio
+async def test_mercari_failure_gives_links_card_and_queries_each_platform_once():
+    rakuten = FakeAdapter(found(18300.0))
+    platforms = fake_platforms(mercari=failed(FetchStatus.TIMEOUT), rakuten=rakuten)
+    result = await run(text="viscaria", platforms=platforms)
 
     assert result.is_full is False
-    assert result.search_url == "https://buyee.jp/x"
-    assert result.platforms["rakuten"].min_price_twd == 3837
-    # 已取得的樂天價格不重抓
+    assert result.platforms["rakuten"].min_price_twd == jpy_to_twd(18300.0)
     assert len(rakuten.calls) == 1
 
 
 @pytest.mark.anyio
-async def test_all_platforms_fail_yields_no_prices():
-    error = ScrapingError("blocked")
-    fetchers = fake_fetchers(
-        buyee=returning(error),
-        taiwanese=returning(error),
-        chinese=returning(error),
+async def test_mercari_listings_give_full_card_data():
+    platforms = fake_platforms(
+        mercari=found(30000.0, 35000.0, 40000.0, thumbnail="https://static.mercdn.net/x.jpg"),
     )
-    result = await run(text="藍牙耳機", fetchers=fetchers)
+    result = await run(text="switch", platforms=platforms)
+
+    assert result.is_full is True
+    assert result.scraper_result.median_price_jpy == 35000.0
+    assert result.scraper_result.representative_image_url == "https://static.mercdn.net/x.jpg"
+    assert result.pricing.price_jpy == 35000.0
+    assert result.pricing.fb_price_twd == 8500
+    assert result.min_price_twd == jpy_to_twd(30000.0)
+    assert result.avg_price_twd == jpy_to_twd(35000.0)
+
+
+@pytest.mark.anyio
+async def test_all_platforms_fail_yields_no_prices():
+    platforms = fake_platforms(
+        mercari=failed(FetchStatus.BLOCKED),
+        rakuten=failed(FetchStatus.MALFORMED),
+    )
+    result = await run(text="藍牙耳機", platforms=platforms)
 
     assert all(q.min_price_twd is None for q in result.platforms.values())
     assert result.min_price_twd is None
     assert result.avg_price_twd is None
+
+
+@pytest.mark.anyio
+async def test_no_results_means_no_match_and_never_a_made_up_price():
+    result = await run(text="switch")
+
+    assert result.platforms["mercari"].status is PlatformStatus.NO_MATCH
+    assert result.platforms["rakuten"].status is PlatformStatus.NO_MATCH
+    assert all(q.min_price_twd is None for q in result.platforms.values())
+
+
+@pytest.mark.anyio
+async def test_rakuten_price_ignores_junk_below_300_yen_and_beyond_first_five():
+    platforms = fake_platforms(rakuten=found(9000.0, 120.0, 8000.0, 9500.0, 8800.0, 500.0))
+    result = await run(text="switch", platforms=platforms)
+
+    assert result.platforms["rakuten"].min_price_twd == jpy_to_twd(8000.0)
 
 
 @pytest.mark.anyio
@@ -174,11 +241,11 @@ async def test_cache_hit_skips_ai_and_platforms_and_keeps_original_time():
     first = await run(text="switch", cache=cache)
 
     parser = FakeParser(error=AssertionError("should not be called"))
-    buyee = returning(AssertionError("should not be called"))
+    mercari = FakeAdapter(AssertionError("should not be called"))
     second = await compare_prices(
         text="  SWITCH ",
         parser=parser,
-        fetchers=fake_fetchers(buyee=buyee),
+        platforms=fake_platforms(mercari=mercari),
         clock=lambda: datetime(2026, 10, 1, 12, 30, tzinfo=timezone.utc),
         cache=cache,
     )
@@ -187,6 +254,7 @@ async def test_cache_hit_skips_ai_and_platforms_and_keeps_original_time():
     assert second.fetched_at == first.fetched_at
     assert second.platforms == first.platforms
     assert parser.calls == []
+    assert mercari.calls == []
 
 
 @pytest.mark.anyio
