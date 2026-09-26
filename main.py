@@ -40,6 +40,7 @@ FlexSendMessage = FlexMessage
 TextSendMessage = TextMessage
 from services.parser import (
     AI_BUSY_MESSAGE,
+    GeminiAPIError,
     GeminiRateLimitError,
     GeminiServerError,
 )
@@ -348,7 +349,8 @@ async def handle_line_event(
     1. FollowEvent 回覆歡迎說明。
     2. Rich Menu 指令（新手指南、平台比較與免責、集運倉介紹、客服與回報）。
     3. 文字或圖片（經 LINE Blob API 下載）交給比價流程入口，結果轉成卡片回覆。
-    4. AI 故障時回覆對應的降級訊息；其他例外往上拋，由 handle_line_events 回覆通用降級訊息。
+    4. AI 故障時：文字輸入由比價流程回傳降級結果（原始文字＋各平台搜尋連結），照常轉成卡片；
+       圖片輸入沒有關鍵字，回覆對應的降級文字。其他例外往上拋，由 handle_line_events 回覆通用降級訊息。
     """
     if isinstance(event, FollowEvent):
         logger.info(f"Handling FollowEvent from user {getattr(event.source, 'user_id', 'unknown')}")
@@ -410,12 +412,17 @@ async def handle_line_event(
     try:
         result = await compare_prices(text=user_text, image=image_bytes, received_at=received_at)
     except GeminiServerError as exc:
+        # 只有圖片輸入會走到這裡（文字輸入的 AI 故障已由比價流程降級為搜尋連結卡片）
         logger.warning(f"Gemini server error (503 UNAVAILABLE): {exc}")
         await reply_text_safely(line_bot_api, event, str(exc) or AI_BUSY_MESSAGE)
         return
     except GeminiRateLimitError as exc:
         logger.warning(f"Gemini rate limit exceeded: {exc}")
         await reply_text_safely(line_bot_api, event, str(exc) or "目前查詢人數較多，請稍後再試！")
+        return
+    except GeminiAPIError as exc:
+        logger.warning(f"Gemini API error: {exc}")
+        await reply_text_safely(line_bot_api, event, AI_BUSY_MESSAGE)
         return
 
     flex_dict, alt_text = build_comparison_flex(result)

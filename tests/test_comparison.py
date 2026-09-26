@@ -12,7 +12,13 @@ from services.comparison import (
     PlatformStatus,
     compare_prices,
 )
-from services.parser import GeminiServerError, IrrelevantPostError, ParsedItem
+from services.parser import (
+    GeminiAPIError,
+    GeminiRateLimitError,
+    GeminiServerError,
+    IrrelevantPostError,
+    ParsedItem,
+)
 from services.platforms import FetchStatus
 from services.pricing import convert_to_twd
 from tests.fakes import FakeAdapter, FakeClock, FakeParser, SlowAdapter, SlowParser, failed, fake_platforms, found
@@ -235,10 +241,54 @@ async def test_irrelevant_input_falls_back_to_links_using_raw_text():
     assert result.keyword_jp == "人気商品"
 
 
+# --- AI 故障降級（工作票 07）：以原始輸入列出「其他」類 6 平台的搜尋連結 ---
+
+AI_FAILURES = {
+    "server_error_5xx": GeminiServerError("busy"),
+    "rate_limit_429": GeminiRateLimitError("slow down"),
+    "quota_exhausted": GeminiRateLimitError("RESOURCE_EXHAUSTED: quota exceeded"),
+    "other_api_error": GeminiAPIError("bad response"),
+    "timeout": AiTimeoutError(),
+}
+
+
 @pytest.mark.anyio
-async def test_ai_service_errors_propagate_to_caller():
-    with pytest.raises(GeminiServerError):
-        await run(text="switch", parser=FakeParser(error=GeminiServerError("busy")))
+@pytest.mark.parametrize("error", AI_FAILURES.values(), ids=AI_FAILURES.keys())
+async def test_ai_failure_degrades_to_default_platform_links_using_raw_input(no_affiliates, error):
+    mercari, shopee = FakeAdapter(found(30000.0)), FakeAdapter(found(9000, currency="TWD"))
+    platforms = fake_platforms(mercari=mercari, shopee=shopee)
+    result = await run(text="aj1 芝加哥", parser=FakeParser(error=error), platforms=platforms)
+
+    assert result.ai_unavailable is True
+    assert result.parsed_item is None
+    assert result.keyword_zh == result.keyword_jp == "aj1 芝加哥"
+    assert result.category.value == "其他"
+    assert list(result.platforms) == ["shopee", "momo", "pchome", "yahoo_tw", "ruten", "taobao"]
+    assert all(q.status is PlatformStatus.LINK_ONLY and q.min_price_twd is None for q in result.platforms.values())
+    assert result.platforms["shopee"].search_url == "https://shopee.tw/search?keyword=AJ1%20%E8%8A%9D%E5%8A%A0%E5%93%A5"
+    # 只給連結，不查平台
+    assert shopee.calls == [] and mercari.calls == []
+
+
+@pytest.mark.anyio
+async def test_normal_results_are_not_marked_ai_unavailable():
+    assert (await run(text="switch")).ai_unavailable is False
+
+
+@pytest.mark.anyio
+async def test_degraded_results_are_not_cached():
+    cache = TTLCache()
+    await run(text="switch", parser=FakeParser(error=GeminiServerError("busy")), cache=cache)
+    assert len(cache) == 0
+
+    result = await run(text="switch", cache=cache)
+    assert result.ai_unavailable is False
+
+
+@pytest.mark.anyio
+async def test_ai_failure_on_image_input_propagates_since_there_is_no_keyword():
+    with pytest.raises(GeminiRateLimitError):
+        await run(image=b"img", parser=FakeParser(error=GeminiRateLimitError("slow down")))
 
 
 @pytest.mark.anyio
@@ -407,18 +457,29 @@ async def test_time_before_the_pipeline_counts_against_the_deadline():
 
 
 @pytest.mark.anyio
-async def test_hanging_ai_parser_gives_up_within_budget_as_ai_timeout():
+async def test_hanging_ai_parser_gives_up_within_budget_and_degrades_to_links():
     clock = FakeClock(FIXED_NOW)
     parser = SlowParser(clock, 600, switch_item())
     mercari = FakeAdapter(found(30000.0))
 
-    with pytest.raises(AiTimeoutError) as exc_info:
-        await run(text="switch", parser=parser, platforms=fake_platforms(mercari=mercari), clock=clock)
+    result = await run(text="switch", parser=parser, platforms=fake_platforms(mercari=mercari), clock=clock)
 
-    # 與 AI 忙碌同一種降級回覆
-    assert isinstance(exc_info.value, GeminiServerError)
+    assert result.ai_unavailable is True
     assert clock.monotonic() < DEADLINE_SECONDS
     assert mercari.calls == []
+
+
+@pytest.mark.anyio
+async def test_slow_failing_ai_still_degrades_within_deadline():
+    """AI 在收到訊息後很晚才失敗，降級回覆仍在 15 秒內備妥。"""
+    clock = FakeClock(FIXED_NOW)
+    clock.advance(5)
+    parser = SlowParser(clock, 6.5, error=GeminiServerError("busy"))
+
+    result = await run(text="switch", parser=parser, clock=clock, received_at=0.0)
+
+    assert result.ai_unavailable is True
+    assert clock.monotonic() <= DEADLINE_SECONDS
 
 
 @pytest.mark.anyio

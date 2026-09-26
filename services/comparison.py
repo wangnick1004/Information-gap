@@ -8,6 +8,9 @@ AI 判斷商品類別後，依類別對照表（services.categories）從平台�
 時間預算：自收到訊息起 15 秒內一定要能回覆。AI 解析有自己的上限（含重試），
 平台查詢在剩餘時間內盡量等全部完成；時間一到，未完成的平台標記為逾時（卡片上只給連結）。
 結果中的平台依相符最低價由低到高排序，無價格者依對照表順序排在後面；分潤只影響連結。
+
+AI 故障（伺服器錯誤、速率限制、額度用完、逾時）時降級：以使用者原始文字作為關鍵字，
+只列出「其他」類 6 個平台的搜尋連結（不查價、不快取），結果標記 ai_unavailable。
 """
 
 import asyncio
@@ -25,6 +28,7 @@ from services.clock import Clock, system_clock
 from services.parser import (
     DEFAULT_VISION_PROMPT,
     AI_BUSY_MESSAGE,
+    GeminiAPIError,
     GeminiServerError,
     IrrelevantPostError,
     ParsedItem,
@@ -83,8 +87,10 @@ class ComparisonResult:
     from_cache: bool = False
     min_price_twd: Optional[int] = None
     avg_price_twd: Optional[int] = None
-    # AI 解析結果；AI 判定輸入與購物無關時為 None
+    # AI 解析結果；AI 判定輸入與購物無關或 AI 故障時為 None
     parsed_item: Optional[ParsedItem] = None
+    # AI 故障：以原始輸入提供搜尋連結，沒有查價
+    ai_unavailable: bool = False
     # 過渡欄位：舊版卡片（落地價、Mercari 中位數）所需，只在 Mercari 查到日圓商品時存在；
     # 卡片改版後應移除
     pricing: Optional[PricingResult] = None
@@ -134,8 +140,8 @@ async def compare_prices(
     platforms 為候選平台池（預設為 build_platforms() 的全部平台），實際查詢哪 6 個由類別決定。
     received_at 為收到訊息時的 clock.monotonic()，15 秒截止由此起算；未給則從現在起算。
 
-    AI 服務錯誤（GeminiServerError / GeminiRateLimitError / GeminiAPIError）會原樣拋出，
-    AI 解析超過時間上限時拋出 AiTimeoutError（屬 GeminiServerError），由呼叫端決定如何回覆；
+    文字輸入遇到 AI 服務錯誤（GeminiAPIError 各子類，含超過時間上限的 AiTimeoutError）時，
+    回傳 ai_unavailable 的降級結果；圖片輸入沒有可用的關鍵字，AI 服務錯誤原樣拋出由呼叫端回覆。
     平台失敗、逾時與「與購物無關」則反映在各平台狀態中。
     """
     if (text is None) == (image is None):
@@ -164,8 +170,9 @@ async def compare_prices(
         + ", ".join(f"{name}={quote.status.value}" for name, quote in result.platforms.items())
     )
 
-    # 有平台逾時的結果不快取，避免一次慢查詢讓之後一小時都只拿到連結
-    if cache_key and not any(q.status is PlatformStatus.TIMEOUT for q in result.platforms.values()):
+    # 有平台逾時或 AI 故障的結果不快取，避免一次失敗讓之後一小時都只拿到連結
+    timed_out = any(q.status is PlatformStatus.TIMEOUT for q in result.platforms.values())
+    if cache_key and not timed_out and not result.ai_unavailable:
         cache.set(cache_key, result, ttl=CACHE_TTL_SECONDS)
     return result
 
@@ -178,11 +185,17 @@ async def _run_comparison(
     clock: Clock,
     deadline: float,
 ) -> ComparisonResult:
-    parsed_item = await _parse(text, image, parser, clock, deadline)
+    try:
+        parsed_item = await _parse(text, image, parser, clock, deadline)
+    except GeminiAPIError as exc:
+        if text is None:
+            raise
+        logger.warning(f"[AI Unavailable] {type(exc).__name__}: {exc}; replying with search links for raw input")
+        return _links_only_result(text, platforms, clock)
 
     keyword_zh, keyword_jp = _keywords(text, parsed_item)
     category = parsed_item.category if parsed_item else Category.OTHER
-    selected = {name: platforms[name] for name in platforms_for(category) if name in platforms}
+    selected = _select_platforms(category, platforms)
     logger.info(
         f"⚡ [Search Keywords] zh: '{keyword_zh}' / jp: '{keyword_jp}' / "
         f"category: {category.value} -> {', '.join(selected)}"
@@ -211,6 +224,29 @@ async def _run_comparison(
     if parsed_item and mercari and mercari.status is FetchStatus.OK and mercari.listings[0].currency == "JPY":
         result = _with_legacy_card_fields(result, parsed_item, mercari, keyword_jp)
     return result
+
+
+def _select_platforms(category: Category, platforms: Mapping[str, Platform]) -> Dict[str, Platform]:
+    """依類別對照表從平台集合選出要呈現的平台（保持對照表順序）。"""
+    return {name: platforms[name] for name in platforms_for(category) if name in platforms}
+
+
+def _links_only_result(text: str, platforms: Mapping[str, Platform], clock: Clock) -> ComparisonResult:
+    """AI 故障時的降級結果：原始輸入當關鍵字，「其他」類 6 平台只給搜尋連結。"""
+    selected = _select_platforms(Category.OTHER, platforms)
+    return ComparisonResult(
+        query_text=text,
+        product_name=text,
+        keyword_zh=text,
+        keyword_jp=text,
+        platforms={
+            name: PlatformQuote(PlatformStatus.LINK_ONLY, search_url=platform.search_url(text))
+            for name, platform in selected.items()
+        },
+        fetched_at=clock.now(),
+        category=Category.OTHER,
+        ai_unavailable=True,
+    )
 
 
 async def _parse(

@@ -330,9 +330,6 @@ def test_end_to_end_vague_input_flex_fallback(
         assert len(card_china_btns) == 5
 
 
-
-
-
 @patch("main.AsyncApiClient")
 @patch("main.AsyncMessagingApi")
 def test_end_to_end_scraper_timeout_fallback(
@@ -423,83 +420,3 @@ def test_end_to_end_scraper_error_fallback(
         sent_msg = reply_request.messages[0]
         assert isinstance(sent_msg, FlexMessage)
         assert "比價成功，來去撈便宜～" in sent_msg.alt_text
-
-
-@patch("main.AsyncApiClient")
-@patch("main.AsyncMessagingApi")
-def test_end_to_end_gemini_server_error_fallback(
-    mock_messaging_api_class,
-    mock_api_client_class,
-):
-    """Test webhook graceful reply when Gemini API 503 ServerError persists after retries."""
-    from services.parser import GeminiServerError
-
-    mock_api = AsyncMock()
-    mock_messaging_api_class.return_value = mock_api
-
-    parser = FakeParser(error=GeminiServerError("目前 AI 伺服器大塞車，請稍等一兩分鐘後再試一次喔！"))
-
-    secret = "secret_integration_test"
-    token = "token_integration_test"
-    body_str = create_line_text_payload("售 Sony WH-1000XM5 8000")
-    signature = generate_signature(secret, body_str)
-
-    with patch("main.compare_prices", pipeline_with(parser, None)), \
-         patch.object(settings, "line_channel_secret", secret), \
-         patch.object(settings, "line_channel_access_token", token):
-
-        response = client.post(
-            "/api/webhook",
-            content=body_str,
-            headers={
-                "Content-Type": "application/json",
-                "X-Line-Signature": signature,
-            },
-        )
-
-        assert response.status_code == 200
-        mock_api.reply_message.assert_awaited_once()
-        reply_request = mock_api.reply_message.call_args[0][0]
-        sent_msg = reply_request.messages[0]
-        assert isinstance(sent_msg, TextMessage)
-        assert "目前 AI 伺服器大塞車，請稍等一兩分鐘後再試一次喔！" in sent_msg.text
-
-
-@patch("main.AsyncApiClient")
-@patch("main.AsyncMessagingApi")
-def test_end_to_end_gemini_rate_limit_fallback(
-    mock_messaging_api_class,
-    mock_api_client_class,
-):
-    """Test webhook graceful reply when Gemini API rate limit is exceeded after all retries."""
-    from services.parser import GeminiRateLimitError
-
-    mock_api = AsyncMock()
-    mock_messaging_api_class.return_value = mock_api
-
-    parser = FakeParser(error=GeminiRateLimitError("目前查詢人數較多，請稍後再試！"))
-
-    secret = "secret_integration_test"
-    token = "token_integration_test"
-    body_str = create_line_text_payload("售 Sony WH-1000XM5 8000")
-    signature = generate_signature(secret, body_str)
-
-    with patch("main.compare_prices", pipeline_with(parser, None)), \
-         patch.object(settings, "line_channel_secret", secret), \
-         patch.object(settings, "line_channel_access_token", token):
-
-        response = client.post(
-            "/api/webhook",
-            content=body_str,
-            headers={
-                "Content-Type": "application/json",
-                "X-Line-Signature": signature,
-            },
-        )
-
-        assert response.status_code == 200
-        mock_api.reply_message.assert_awaited_once()
-        reply_request = mock_api.reply_message.call_args[0][0]
-        sent_msg = reply_request.messages[0]
-        assert isinstance(sent_msg, TextMessage)
-        assert "目前查詢人數較多，請稍後再試！" in sent_msg.text

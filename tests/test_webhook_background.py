@@ -8,7 +8,9 @@ import pytest
 from fastapi.testclient import TestClient
 
 from main import GENERIC_ERROR_MESSAGE, app, settings
-from services.parser import ParsedItem
+from services.comparison import AiTimeoutError
+from services.flex_builder import AI_UNAVAILABLE_NOTICE
+from services.parser import AI_BUSY_MESSAGE, GeminiAPIError, GeminiRateLimitError, GeminiServerError, ParsedItem
 from tests.fakes import FakeParser, generate_signature, pipeline_with
 
 SECRET = "test_secret_bg"
@@ -303,3 +305,70 @@ def test_deadline_is_counted_from_when_the_webhook_was_received(line_api):
     [(received_at, compare_started)] = received
     assert received_at is not None
     assert before <= received_at <= compare_started
+
+
+# --- AI 故障降級卡片（工作票 07）---
+
+AI_FAILURES = {
+    "server_error_5xx": GeminiServerError(AI_BUSY_MESSAGE),
+    "rate_limit_429": GeminiRateLimitError("目前查詢人數較多，請稍後再試！"),
+    "quota_exhausted": GeminiRateLimitError("RESOURCE_EXHAUSTED: quota exceeded"),
+    "other_api_error": GeminiAPIError("Gemini API error"),
+    "timeout": AiTimeoutError(),
+}
+
+
+def card_json(msg):
+    return json.dumps(msg.contents.to_dict(), ensure_ascii=False)
+
+
+@pytest.mark.parametrize("error", AI_FAILURES.values(), ids=AI_FAILURES.keys())
+def test_ai_failure_replies_card_with_search_links_for_raw_text(line_api, error):
+    with patch("main.compare_prices", pipeline_with(FakeParser(error=error))):
+        assert post([text_event("AJ1 芝加哥", "ev_ai_down", "token_ai_down")]).status_code == 200
+
+    [(reply_token, msg)] = replies(line_api)
+    assert reply_token == "token_ai_down"
+    assert msg.type == "flex"
+    card = card_json(msg)
+    assert AI_UNAVAILABLE_NOTICE in card
+    assert "價格更新" not in card
+    for url in ("https://shopee.tw/search?keyword=AJ1%20%E8%8A%9D%E5%8A%A0%E5%93%A5",
+                "https://www.momoshop.com.tw/search/searchShop.jsp?keyword=AJ1%20%E8%8A%9D%E5%8A%A0%E5%93%A5"):
+        assert url in card
+    [bubble] = msg.contents.to_dict()["contents"]
+    buttons = [c for c in bubble["footer"]["contents"] if c["type"] == "button"]
+    assert len(buttons) == 6
+
+
+def test_normal_card_has_no_ai_unavailable_notice(line_api):
+    with patch("main.compare_prices", pipeline_with(FakeParser(ParsedItem(keyword_zh="藍牙耳機")))):
+        post([text_event("藍牙耳機", "ev_ai_ok", "token_ai_ok")])
+
+    [(_, msg)] = replies(line_api)
+    assert AI_UNAVAILABLE_NOTICE not in card_json(msg)
+
+
+def test_ai_failure_on_image_replies_text_message(line_api):
+    blob = AsyncMock()
+    blob.get_message_content.return_value = b"img"
+    event = {**text_event("", "ev_img", "token_img"), "message": {"type": "image", "id": "m_img", "quoteToken": "q", "contentProvider": {"type": "line"}}}
+    with patch("main.AsyncMessagingApiBlob", return_value=blob), \
+         patch("main.compare_prices", pipeline_with(FakeParser(error=GeminiRateLimitError("目前查詢人數較多，請稍後再試！")))):
+        assert post([event]).status_code == 200
+
+    [(_, msg)] = replies(line_api)
+    assert msg.type == "text"
+    assert msg.text == "目前查詢人數較多，請稍後再試！"
+
+
+def test_other_ai_error_on_image_replies_ai_busy_text(line_api):
+    blob = AsyncMock()
+    blob.get_message_content.return_value = b"img"
+    event = {**text_event("", "ev_img2", "token_img2"), "message": {"type": "image", "id": "m_img2", "quoteToken": "q", "contentProvider": {"type": "line"}}}
+    with patch("main.AsyncMessagingApiBlob", return_value=blob), \
+         patch("main.compare_prices", pipeline_with(FakeParser(error=GeminiAPIError("bad response")))):
+        assert post([event]).status_code == 200
+
+    [(_, msg)] = replies(line_api)
+    assert msg.text == AI_BUSY_MESSAGE

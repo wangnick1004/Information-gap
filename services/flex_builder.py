@@ -943,6 +943,9 @@ def build_price_comparison_flex(
 
 
 
+AI_UNAVAILABLE_NOTICE = "⚠️ AI 暫時無法使用，先用您輸入的文字提供各平台搜尋連結，請點擊按鈕查看價格。"
+
+
 def build_comparison_flex(result: ComparisonResult) -> Tuple[Dict[str, Any], str]:
     """
     將比價結果轉成 LINE Flex 卡片，回傳 (flex_dict, alt_text)。
@@ -974,19 +977,33 @@ def build_comparison_flex(result: ComparisonResult) -> Tuple[Dict[str, Any], str
             perfected_keyword=result.keyword_zh if result.parsed_item else None,
             **common,
         )
-        alt_text = "比價成功，來去撈便宜～"
+        alt_text = "AI 暫時無法使用，先提供各平台搜尋連結" if result.ai_unavailable else "比價成功，來去撈便宜～"
 
     # 按鈕只呈現比價結果中的平台（依類別選出的 6 個），沒有平台的卡片不顯示；
     # 各卡片內的按鈕順序沿用比價結果（依價格由低到高），不在此重新排序
     japanese = [(name, q) for name, q in result.platforms.items() if name in JAPANESE_PLATFORMS]
     others = [(name, q) for name, q in result.platforms.items() if name not in JAPANESE_PLATFORMS]
-    price_time = _price_time_text(result.fetched_at)
+    # AI 故障時沒有查價，不顯示價格時間，改在卡片上說明
+    footer_notes = [] if result.ai_unavailable else [_price_time_text(result.fetched_at)]
     flex_dict["contents"] = [
-        _with_platform_buttons(card, [_platform_button(name, quote) for name, quote in group], price_time)
+        _with_platform_buttons(card, [_platform_button(name, quote) for name, quote in group], footer_notes)
         for card, group in zip(flex_dict["contents"], (japanese, others))
         if group
     ]
+    if result.ai_unavailable:
+        for card in flex_dict["contents"]:
+            card["body"]["contents"].insert(0, _ai_unavailable_text())
     return flex_dict, alt_text
+
+
+def _ai_unavailable_text() -> Dict[str, Any]:
+    return {
+        "type": "text",
+        "text": AI_UNAVAILABLE_NOTICE,
+        "size": "xs",
+        "color": "#B45309",
+        "wrap": True,
+    }
 
 
 def _price_time_text(fetched_at: datetime) -> Dict[str, Any]:
@@ -1015,9 +1032,9 @@ def _platform_button(name: str, quote: PlatformQuote) -> Dict[str, Any]:
 
 
 def _with_platform_buttons(
-    card: Dict[str, Any], buttons: List[Dict[str, Any]], price_time: Dict[str, Any]
+    card: Dict[str, Any], buttons: List[Dict[str, Any]], footer_notes: List[Dict[str, Any]]
 ) -> Dict[str, Any]:
-    """以指定按鈕取代卡片頁尾原本寫死的平台按鈕，保留頁尾其他內容，並附上價格取得時間。"""
+    """以指定按鈕取代卡片頁尾原本寫死的平台按鈕，保留頁尾其他內容，並附上說明（例如價格取得時間）。"""
     footer = card["footer"]["contents"]
-    card["footer"]["contents"] = buttons + [price_time] + [c for c in footer if c.get("type") != "button"]
+    card["footer"]["contents"] = buttons + footer_notes + [c for c in footer if c.get("type") != "button"]
     return card
