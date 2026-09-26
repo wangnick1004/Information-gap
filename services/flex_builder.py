@@ -2,9 +2,11 @@ import logging
 import os
 import re
 import urllib.parse
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple, Union
 
 from config import settings
+from price_fetcher import inject_shopee_button_to_flex
+from services.comparison import ComparisonResult, PlatformQuote
 from services.parser import ParsedAnimeItem, ParsedItem
 from services.pricing import PricingResult
 from services.scraper import (
@@ -1074,3 +1076,50 @@ def build_price_comparison_flex(
         "contents": [card_japan, card_china],
     }
 
+
+
+def _display_price(quote: PlatformQuote) -> Optional[Union[int, str]]:
+    if quote.min_price_twd is None:
+        return None
+    return f"{quote.min_price_twd}起" if quote.is_lower_bound else quote.min_price_twd
+
+
+def build_comparison_flex(result: ComparisonResult) -> Tuple[Dict[str, Any], str]:
+    """
+    將比價結果轉成 LINE Flex 卡片，回傳 (flex_dict, alt_text)。
+    只負責呈現：平台順序與價格皆來自比價結果，分潤設定只影響連結。
+    """
+    common = dict(
+        **{f"{name}_min_price": _display_price(quote) for name, quote in result.platforms.items()},
+        enable_dynamic_buttons=True,
+        affiliate_id=settings.buyee_affiliate_id,
+        affiliate_base_url=settings.affiliate_base_url,
+        shopee_affiliate_base_url=settings.shopee_affiliate_base_url,
+        taobao_affiliate_base_url=settings.taobao_affiliate_base_url,
+        yahoo_tw_affiliate_base_url=settings.yahoo_tw_affiliate_base_url,
+    )
+
+    if result.is_full:
+        flex_dict = build_price_comparison_flex(
+            parsed_item=result.parsed_item,
+            pricing_result=result.pricing,
+            scraper_result=result.scraper_result,
+            perfected_keyword=result.keyword_zh,
+            min_price=result.min_price_twd,
+            avg_price=result.avg_price_twd,
+            **common,
+        )
+        alt_text = f"【比價分析】{result.keyword_zh}".strip()
+    else:
+        flex_dict = build_keyword_flex_message(
+            japanese_keyword=result.keyword_jp,
+            search_url=result.search_url,
+            item_title=result.product_name,
+            keyword_zh=result.keyword_zh,
+            perfected_keyword=result.keyword_zh if result.parsed_item else None,
+            **common,
+        )
+        alt_text = "比價成功，來去撈便宜～"
+
+    flex_dict = inject_shopee_button_to_flex(flex_dict, result.platforms["shopee"].min_price_twd)
+    return flex_dict, alt_text

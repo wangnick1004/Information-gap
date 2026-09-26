@@ -52,31 +52,41 @@ def test_ttl_cache_delete_and_clear():
 
 @pytest.mark.anyio
 async def test_prewarm_search_cache():
-    """Test background cache pre-warming populates hot keywords into search_cache."""
-    from unittest.mock import AsyncMock, patch
+    """Test background cache pre-warming makes hot keywords answer from cache."""
+    from unittest.mock import patch
+    from main import PREWARM_KEYWORDS, prewarm_search_cache
     from services.cache import search_cache
-    from services.scraper import ScrapingResult
-    from main import prewarm_search_cache
+    from services.comparison import compare_prices
+    from services.parser import ParsedItem
+    from tests.fakes import FakeParser, buyee_result, fake_fetchers, pipeline_with, returning
 
     search_cache.clear()
+    parser = FakeParser(ParsedItem(keyword_zh="Switch 2", keyword_jp="Switch 2"))
+    fetchers = fake_fetchers(buyee=returning(buyee_result()))
 
-    mock_scrape = AsyncMock(
-        return_value=ScrapingResult(
-            query="SWITCH 2",
-            search_url="https://buyee.jp/mercari/search?keyword=SWITCH2",
-            lowest_price_jpy=40000.0,
-            median_price_jpy=45000.0,
-            representative_image_url="https://example.com/switch2.jpg",
-            sample_prices=[40000.0, 45000.0],
-            total_found=2,
-        )
-    )
-
-    with patch("main.scrape_buyee_prices", mock_scrape):
+    with patch("main.compare_prices", pipeline_with(parser, fetchers)):
         await prewarm_search_cache()
 
-    # Check that hot keywords were pre-warmed into the cache
-    assert "flex:SWITCH 2" in search_cache
-    cached_entry = search_cache.get("flex:SWITCH 2")
-    assert cached_entry is not None
-    assert "flex_dict" in cached_entry
+    assert len(parser.calls) == len(PREWARM_KEYWORDS)
+    # 使用者之後查同一個熱門關鍵字時直接命中快取，不再呼叫 AI
+    cached = await compare_prices(text="switch 2", parser=FakeParser(error=AssertionError("AI called")))
+    assert cached.from_cache is True
+
+
+@pytest.mark.anyio
+async def test_prewarm_does_not_cache_failed_comparisons():
+    """啟動預熱時抓價失敗，不應快取僅連結的卡片。"""
+    from unittest.mock import patch
+    from main import prewarm_search_cache
+    from services.cache import search_cache
+    from services.parser import ParsedItem
+    from services.scraper import ScrapingTimeoutError
+    from tests.fakes import FakeParser, fake_fetchers, pipeline_with, returning
+
+    search_cache.clear()
+    fetchers = fake_fetchers(buyee=returning(ScrapingTimeoutError("slow")))
+
+    with patch("main.compare_prices", pipeline_with(FakeParser(ParsedItem(keyword_zh="x")), fetchers)):
+        await prewarm_search_cache()
+
+    assert len(search_cache) == 0

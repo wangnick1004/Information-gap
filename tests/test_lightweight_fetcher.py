@@ -291,22 +291,17 @@ async def test_rakuten_price_retained_on_scraper_failure():
         is_acg_or_toy=True,
     )
 
-    with patch("main.parse_fb_post", new_callable=AsyncMock) as mock_parse, \
-         patch("main.scrape_buyee_prices", new_callable=AsyncMock) as mock_buyee, \
-         patch("main.search_taiwanese_platforms", new_callable=AsyncMock) as mock_tw, \
-         patch("main.search_chinese_platforms", new_callable=AsyncMock) as mock_cn, \
-         patch("main.fetch_rakuten_min_price", new_callable=AsyncMock) as mock_rakuten, \
-         patch("main.fetch_mercari_api_price", new_callable=AsyncMock) as mock_mercari, \
-         patch("main.AsyncMessagingApi") as mock_msg_api_class:
+    from tests.fakes import FakeParser, fake_fetchers, pipeline_with, returning
 
-        mock_parse.return_value = parsed_item
+    rakuten = returning(3837)  # Rakuten succeeded on the first concurrent fetch!
+    fetchers = fake_fetchers(
         # Simulate Buyee scraper timing out
-        mock_buyee.side_effect = ScrapingTimeoutError("Scraping timed out")
-        mock_tw.return_value = MagicMock(sample_prices=[])
-        mock_cn.return_value = MagicMock(sample_prices=[])
-        # Rakuten succeeded on the first concurrent fetch!
-        mock_rakuten.return_value = 3837
-        mock_mercari.return_value = None
+        buyee=returning(ScrapingTimeoutError("Scraping timed out")),
+        rakuten=rakuten,
+    )
+
+    with patch("main.compare_prices", pipeline_with(FakeParser(parsed_item), fetchers)), \
+         patch("main.AsyncMessagingApi") as mock_msg_api_class:
 
         mock_api = AsyncMock()
         mock_msg_api_class.return_value = mock_api
@@ -321,7 +316,7 @@ async def test_rakuten_price_retained_on_scraper_failure():
 
         # The Rakuten price should have been retained (3837) without being re-fetched!
         # Because it was retained, fetch_rakuten_min_price was called exactly ONCE (in Step 2), not re-called in fallback!
-        assert mock_rakuten.call_count == 1
+        assert len(rakuten.calls) == 1
         card1 = flex_dict["contents"][0]
         buttons = [c for c in card1["footer"]["contents"] if c.get("type") == "button"]
         rakuten_btn = [b for b in buttons if "樂天" in b.get("text", "") or "樂天" in b.get("action", {}).get("label", "")][0]

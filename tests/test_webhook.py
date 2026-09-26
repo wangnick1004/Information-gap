@@ -8,6 +8,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 from main import app, settings
+from services.parser import ParsedItem
+from tests.fakes import FakeParser, fake_fetchers, pipeline_with, returning
 
 client = TestClient(app)
 
@@ -301,11 +303,9 @@ def test_webhook_rich_menu_feedback_command(mock_messaging_api_class, mock_api_c
     assert "weiwei33442@gmail.com" in req.messages[0].text
 
 
-@patch("main.scrape_buyee_prices")
-@patch("main.parse_fb_post")
 @patch("main.AsyncApiClient")
 @patch("main.AsyncMessagingApi")
-def test_webhook_direct_keyword_search(mock_messaging_api_class, mock_api_client_class, mock_parse, mock_scrape):
+def test_webhook_direct_keyword_search(mock_messaging_api_class, mock_api_client_class):
     """Test standard keyword search (such as menu button sending 'Switch 2') directly invokes search pipeline."""
     from services.parser import ParsedItem
     from services.scraper import ScrapingResult
@@ -313,7 +313,7 @@ def test_webhook_direct_keyword_search(mock_messaging_api_class, mock_api_client
     mock_api = AsyncMock()
     mock_messaging_api_class.return_value = mock_api
 
-    mock_parse.return_value = ParsedItem(
+    parser = FakeParser(ParsedItem(
         franchise="任天堂",
         character="Switch 2",
         item_type="主機",
@@ -322,8 +322,8 @@ def test_webhook_direct_keyword_search(mock_messaging_api_class, mock_api_client
         search_query_ja="Switch 2",
         fb_price_twd=12000,
         is_anime_merch=True,
-    )
-    mock_scrape.return_value = ScrapingResult(
+    ))
+    buyee = returning(ScrapingResult(
         query="Switch 2",
         search_url="https://buyee.jp/mercari/search?keyword=Switch2",
         lowest_price_jpy=40000.0,
@@ -331,7 +331,7 @@ def test_webhook_direct_keyword_search(mock_messaging_api_class, mock_api_client
         representative_image_url="https://example.com/switch2.jpg",
         sample_prices=[40000.0, 45000.0, 50000.0],
         total_found=3,
-    )
+    ))
 
     secret = "test_secret_123"
     token = "test_token_456"
@@ -359,7 +359,8 @@ def test_webhook_direct_keyword_search(mock_messaging_api_class, mock_api_client
     body_str = json.dumps(payload)
     signature = generate_signature(secret, body_str)
 
-    with patch.object(settings, "line_channel_secret", secret), \
+    with patch("main.compare_prices", pipeline_with(parser, fake_fetchers(buyee=buyee))), \
+         patch.object(settings, "line_channel_secret", secret), \
          patch.object(settings, "line_channel_access_token", token):
 
         response = client.post(
@@ -480,8 +481,7 @@ def test_webhook_rate_limit_interception(mock_messaging_api_class, mock_api_clie
 
     with patch.object(settings, "line_channel_secret", secret), \
          patch.object(settings, "line_channel_access_token", token), \
-         patch("main.parse_fb_post", new_callable=AsyncMock) as mock_parser, \
-         patch("main.scrape_buyee_prices", new_callable=AsyncMock) as mock_scraper:
+         patch("main.compare_prices", pipeline_with(FakeParser(ParsedItem(keyword_zh="商品")))):
 
         # 1. First 5 search requests succeed
         for i in range(5):
@@ -523,10 +523,8 @@ def test_webhook_rate_limit_interception(mock_messaging_api_class, mock_api_clie
 
 @patch("main.AsyncApiClient")
 @patch("main.AsyncMessagingApi")
-@patch("main.scrape_buyee_prices")
-@patch("main.parse_fb_post")
 def test_webhook_string_normalization_and_silent_autocorrect(
-    mock_parse_fb_post, mock_scrape_buyee_prices, mock_messaging_api_class, mock_api_client_class
+    mock_messaging_api_class, mock_api_client_class
 ):
     """Test that incoming message is normalized with .strip().lower(), LLM produces perfected_keyword, and search is executed silently with UX feedback indicator."""
     from linebot.v3.messaging import FlexMessage
@@ -537,7 +535,7 @@ def test_webhook_string_normalization_and_silent_autocorrect(
     mock_messaging_api_class.return_value = mock_api
 
     # LLM autocorrects generic query 'switch' to perfected_keyword 'Nintendo Switch'
-    mock_parse_fb_post.return_value = ParsedItem(
+    parser = FakeParser(ParsedItem(
         franchise="任天堂",
         character="Switch",
         item_type="遊戲主機",
@@ -547,8 +545,8 @@ def test_webhook_string_normalization_and_silent_autocorrect(
         perfected_keyword="Nintendo Switch",
         fb_price_twd=8500,
         is_anime_merch=True,
-    )
-    mock_scrape_buyee_prices.return_value = ScrapingResult(
+    ))
+    buyee = returning(ScrapingResult(
         query="Nintendo Switch",
         search_url="https://buyee.jp/mercari/search?keyword=NintendoSwitch",
         lowest_price_jpy=25000.0,
@@ -556,7 +554,7 @@ def test_webhook_string_normalization_and_silent_autocorrect(
         representative_image_url="https://example.com/switch.jpg",
         sample_prices=[25000.0, 28000.0, 30000.0],
         total_found=3,
-    )
+    ))
 
     secret = "test_secret_123"
     token = "test_token_456"
@@ -585,7 +583,8 @@ def test_webhook_string_normalization_and_silent_autocorrect(
     body_str = json.dumps(payload)
     signature = generate_signature(secret, body_str)
 
-    with patch.object(settings, "line_channel_secret", secret), \
+    with patch("main.compare_prices", pipeline_with(parser, fake_fetchers(buyee=buyee))), \
+         patch.object(settings, "line_channel_secret", secret), \
          patch.object(settings, "line_channel_access_token", token):
 
         response = client.post(
@@ -596,12 +595,12 @@ def test_webhook_string_normalization_and_silent_autocorrect(
         assert response.status_code == 200
 
     # 1. Verify that parse_fb_post received the normalized string 'switch' (.strip().lower())
-    mock_parse_fb_post.assert_awaited_once()
-    called_post_text = mock_parse_fb_post.call_args[1].get("post_text") or mock_parse_fb_post.call_args[0][0]
+    assert len(parser.calls) == 1
+    called_post_text = parser.calls[0]["post_text"]
     assert called_post_text == "switch"
 
     # 2. Verify silent execution: scraper was directly called with perfected_keyword and top 15 items
-    mock_scrape_buyee_prices.assert_awaited_once_with("Nintendo Switch", max_items=15)
+    assert buyee.calls == [(("Nintendo Switch",), {"max_items": 15})]
 
     # 3. Verify reply_message sends a FlexMessage (no Quick Reply interception)
     mock_api.reply_message.assert_awaited_once()
@@ -626,10 +625,8 @@ def test_webhook_string_normalization_and_silent_autocorrect(
 
 @patch("main.AsyncApiClient")
 @patch("main.AsyncMessagingApi")
-@patch("main.scrape_buyee_prices")
-@patch("main.parse_fb_post")
 def test_webhook_silent_autocorrect_even_on_zero_results(
-    mock_parse_fb_post, mock_scrape_buyee_prices, mock_messaging_api_class, mock_api_client_class
+    mock_messaging_api_class, mock_api_client_class
 ):
     """Test that when search yields zero results, it still silently returns Flex Message with UX indicator instead of Quick Reply."""
     from linebot.v3.messaging import FlexMessage
@@ -639,7 +636,7 @@ def test_webhook_silent_autocorrect_even_on_zero_results(
     mock_api = AsyncMock()
     mock_messaging_api_class.return_value = mock_api
 
-    mock_parse_fb_post.return_value = ParsedItem(
+    parser = FakeParser(ParsedItem(
         franchise="Sony",
         character="WH-1000XM5",
         item_type="ヘッドホン",
@@ -649,10 +646,10 @@ def test_webhook_silent_autocorrect_even_on_zero_results(
         perfected_keyword="Sony WH-1000XM5",
         fb_price_twd=None,
         is_anime_merch=True,
-    )
+    ))
 
     # Scraper returns zero results
-    mock_scrape_buyee_prices.return_value = ScrapingResult(
+    buyee = returning(ScrapingResult(
         query="Sony WH-1000XM5",
         search_url="https://buyee.jp/mercari/search?keyword=test",
         lowest_price_jpy=0.0,
@@ -660,7 +657,7 @@ def test_webhook_silent_autocorrect_even_on_zero_results(
         representative_image_url=None,
         sample_prices=[],
         total_found=0,
-    )
+    ))
 
     secret = "test_secret_123"
     token = "test_token_456"
@@ -688,7 +685,8 @@ def test_webhook_silent_autocorrect_even_on_zero_results(
     body_str = json.dumps(payload)
     signature = generate_signature(secret, body_str)
 
-    with patch.object(settings, "line_channel_secret", secret), \
+    with patch("main.compare_prices", pipeline_with(parser, fake_fetchers(buyee=buyee))), \
+         patch.object(settings, "line_channel_secret", secret), \
          patch.object(settings, "line_channel_access_token", token):
 
         response = client.post(
@@ -711,10 +709,8 @@ def test_webhook_silent_autocorrect_even_on_zero_results(
 
 @patch("main.AsyncApiClient")
 @patch("main.AsyncMessagingApi")
-@patch("main.scrape_buyee_prices")
-@patch("main.parse_fb_post")
 def test_webhook_normal_flex_when_no_suggestion(
-    mock_parse_fb_post, mock_scrape_buyee_prices, mock_messaging_api_class, mock_api_client_class
+    mock_messaging_api_class, mock_api_client_class
 ):
     """Test that when input is accurate and specific (no suggested_term), normal Flex Message is returned."""
     from linebot.v3.messaging import FlexMessage
@@ -725,7 +721,7 @@ def test_webhook_normal_flex_when_no_suggestion(
     mock_messaging_api_class.return_value = mock_api
 
     # Specific input has suggested_term=None
-    mock_parse_fb_post.return_value = ParsedItem(
+    parser = FakeParser(ParsedItem(
         franchise="Apple",
         character="iPhone 15",
         item_type="智慧型手機",
@@ -735,9 +731,9 @@ def test_webhook_normal_flex_when_no_suggestion(
         suggested_term=None,
         fb_price_twd=25000,
         is_anime_merch=True,
-    )
+    ))
 
-    mock_scrape_buyee_prices.return_value = ScrapingResult(
+    buyee = returning(ScrapingResult(
         query="Apple iPhone 15",
         search_url="https://buyee.jp/mercari/search?keyword=iphone15",
         lowest_price_jpy=95000.0,
@@ -745,7 +741,7 @@ def test_webhook_normal_flex_when_no_suggestion(
         representative_image_url="https://example.com/iphone15.jpg",
         sample_prices=[95000.0, 100000.0, 105000.0],
         total_found=3,
-    )
+    ))
 
     secret = "test_secret_123"
     token = "test_token_456"
@@ -773,7 +769,8 @@ def test_webhook_normal_flex_when_no_suggestion(
     body_str = json.dumps(payload)
     signature = generate_signature(secret, body_str)
 
-    with patch.object(settings, "line_channel_secret", secret), \
+    with patch("main.compare_prices", pipeline_with(parser, fake_fetchers(buyee=buyee))), \
+         patch.object(settings, "line_channel_secret", secret), \
          patch.object(settings, "line_channel_access_token", token):
 
         response = client.post(
@@ -789,21 +786,11 @@ def test_webhook_normal_flex_when_no_suggestion(
     assert isinstance(reply_req.messages[0], FlexMessage)
 
 
-@patch("main.fetch_shopee_api_price", new_callable=AsyncMock)
-@patch("main.fetch_mercari_api_price", new_callable=AsyncMock)
-@patch("main.fetch_rakuten_min_price", new_callable=AsyncMock)
-@patch("main.scrape_buyee_prices")
-@patch("main.parse_fb_post")
 @patch("main.AsyncApiClient")
 @patch("main.AsyncMessagingApi")
 def test_webhook_concurrent_shopee_dispatch_and_ui_injection(
     mock_messaging_api_class,
     mock_api_client_class,
-    mock_parse,
-    mock_scrape,
-    mock_rakuten,
-    mock_mercari,
-    mock_shopee,
 ):
     """
     Test that fetch_shopee_api_price is concurrently dispatched alongside Mercari and Rakuten,
@@ -816,7 +803,7 @@ def test_webhook_concurrent_shopee_dispatch_and_ui_injection(
     mock_api = AsyncMock()
     mock_messaging_api_class.return_value = mock_api
 
-    mock_parse.return_value = ParsedItem(
+    parser = FakeParser(ParsedItem(
         franchise="任天堂",
         character="Switch OLED",
         item_type="主機",
@@ -826,9 +813,9 @@ def test_webhook_concurrent_shopee_dispatch_and_ui_injection(
         perfected_keyword="Nintendo Switch OLED",
         fb_price_twd=8500,
         is_anime_merch=True,
-    )
+    ))
 
-    mock_scrape.return_value = ScrapingResult(
+    buyee = returning(ScrapingResult(
         query="Nintendo Switch",
         search_url="https://buyee.jp/mercari/search?keyword=Switch",
         lowest_price_jpy=30000.0,
@@ -836,11 +823,10 @@ def test_webhook_concurrent_shopee_dispatch_and_ui_injection(
         representative_image_url="https://example.com/switch.jpg",
         sample_prices=[30000.0, 35000.0, 40000.0],
         total_found=3,
-    )
+    ))
 
-    mock_rakuten.return_value = 7800
-    mock_mercari.return_value = 7200
-    mock_shopee.return_value = 6990
+    shopee = returning(6990)
+    fetchers = fake_fetchers(buyee=buyee, rakuten=returning(7800), mercari=returning(7200), shopee=shopee)
 
     secret = "test_secret_shopee"
     token = "test_token_shopee"
@@ -868,7 +854,8 @@ def test_webhook_concurrent_shopee_dispatch_and_ui_injection(
     body_str = json.dumps(payload)
     signature = generate_signature(secret, body_str)
 
-    with patch.object(settings, "line_channel_secret", secret), \
+    with patch("main.compare_prices", pipeline_with(parser, fetchers)), \
+         patch.object(settings, "line_channel_secret", secret), \
          patch.object(settings, "line_channel_access_token", token):
 
         response = client.post(
@@ -879,8 +866,8 @@ def test_webhook_concurrent_shopee_dispatch_and_ui_injection(
         assert response.status_code == 200
 
     # 1. Verify fetch_shopee_api_price was called with effective keyword
-    mock_shopee.assert_awaited_once()
-    called_kw = mock_shopee.call_args[0][0]
+    assert len(shopee.calls) == 1
+    called_kw = shopee.calls[0][0][0]
     assert "Switch" in called_kw
 
     # 2. Verify Flex Message contains injected Shopee price button
@@ -929,25 +916,11 @@ def _collect_display_texts(node):
     return texts
 
 
-@patch("main.fetch_shopee_api_price", new_callable=AsyncMock, return_value=None)
-@patch("main.fetch_mercari_api_price", new_callable=AsyncMock, return_value=None)
-@patch("main.fetch_rakuten_min_price", new_callable=AsyncMock, return_value=None)
-@patch("main.search_chinese_platforms", new_callable=AsyncMock)
-@patch("main.search_taiwanese_platforms", new_callable=AsyncMock)
-@patch("main.scrape_buyee_prices", new_callable=AsyncMock)
-@patch("main.parse_fb_post", new_callable=AsyncMock)
 @patch("main.AsyncApiClient")
 @patch("main.AsyncMessagingApi")
 def test_webhook_all_platforms_fail_shows_no_price_numbers(
     mock_messaging_api_class,
     mock_api_client_class,
-    mock_parse,
-    mock_scrape,
-    mock_tw,
-    mock_cn,
-    mock_rakuten,
-    mock_mercari,
-    mock_shopee,
 ):
     """When every platform fails, the reply must offer links only — never any price number."""
     from services.parser import ParsedItem
@@ -956,7 +929,7 @@ def test_webhook_all_platforms_fail_shows_no_price_numbers(
     mock_api = AsyncMock()
     mock_messaging_api_class.return_value = mock_api
 
-    mock_parse.return_value = ParsedItem(
+    parser = FakeParser(ParsedItem(
         franchise="",
         character="藍牙耳機",
         item_type="耳機",
@@ -965,10 +938,12 @@ def test_webhook_all_platforms_fail_shows_no_price_numbers(
         search_query_ja="ワイヤレスイヤホン",
         perfected_keyword="藍牙耳機",
         fb_price_twd=None,
+    ))
+    fetchers = fake_fetchers(
+        buyee=returning(ScrapingError("blocked")),
+        taiwanese=returning(ScrapingError("blocked")),
+        chinese=returning(ScrapingError("blocked")),
     )
-    mock_scrape.side_effect = ScrapingError("blocked")
-    mock_tw.side_effect = ScrapingError("blocked")
-    mock_cn.side_effect = ScrapingError("blocked")
 
     secret = "test_secret_allfail"
     payload = {
@@ -988,7 +963,8 @@ def test_webhook_all_platforms_fail_shows_no_price_numbers(
     }
     body_str = json.dumps(payload)
 
-    with patch.object(settings, "line_channel_secret", secret), \
+    with patch("main.compare_prices", pipeline_with(parser, fetchers)), \
+         patch.object(settings, "line_channel_secret", secret), \
          patch.object(settings, "line_channel_access_token", "test_token_allfail"):
         response = client.post(
             "/api/webhook",

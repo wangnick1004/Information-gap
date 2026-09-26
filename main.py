@@ -2,10 +2,8 @@ import asyncio
 from collections import defaultdict
 import logging
 import os
-import random
 import time
-import urllib.parse
-from typing import Optional
+from typing import Any, Dict, Optional
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, Header, HTTPException, Request, Response, status
@@ -29,42 +27,29 @@ from linebot.v3.webhook import WebhookParser
 from linebot.v3.webhooks import FollowEvent, ImageMessageContent, MessageEvent, TextMessageContent
 from pydantic import BaseModel
 from config import Settings, settings
+from services.cache import search_cache
+from services.cache import TTLCache
+from services.comparison import GEMINI_VISION_PROMPT, compare_prices, comparison_cache_key
 from services.flex_builder import (
+    build_comparison_flex,
     build_keyword_flex_message,
-    build_price_comparison_flex,
 )
 # Alias FlexSendMessage and TextSendMessage for LINE SDK convention compatibility
 FlexSendMessage = FlexMessage
 TextSendMessage = TextMessage
-from services.cache import search_cache
 from services.parser import (
     GeminiAPIError,
     GeminiRateLimitError,
     GeminiServerError,
-    IrrelevantPostError,
-    ParsedItem,
-    parse_fb_post,
 )
+# Re-exported via app.py
 from services.pricing import (
     DynamicPriceResult,
-    PricingResult,
     calculate_dynamic_platform_prices,
-    calculate_landed_cost,
     convert_to_twd,
     remove_outliers,
 )
-from services.scraper import (
-    CrossBorderSearchResult,
-    ScrapingBlockedError,
-    ScrapingError,
-    ScrapingResult,
-    ScrapingTimeoutError,
-    normalize_search_keyword,
-    scrape_buyee_prices,
-    search_all_platforms_concurrently,
-    search_chinese_platforms,
-    search_taiwanese_platforms,
-)
+from services.scraper import normalize_search_keyword
 from services.lightweight_fetcher import (
     construct_platform_search_url,
     fetch_lightweight_platform_min_price,
@@ -73,13 +58,6 @@ from services.lightweight_fetcher import (
     fetch_rakuten_min_price,
     filter_extreme_low_prices,
     parse_platform_first_page_prices,
-)
-from price_fetcher import (
-    fetch_mercari_api_price,
-    fetch_price,
-    fetch_shopee_api_price,
-    inject_mercari_button_to_flex,
-    inject_shopee_button_to_flex,
 )
 
 # Configure logging
@@ -149,17 +127,6 @@ WELCOME_RESPONSE_TEXT = (
     "👇 現在，請直接點擊下方選單左上角的「一鍵尋寶體驗」，看看比價神器實際上怎麼運作吧！"
 )
 
-# Gemini Vision Model Prompt for Image Messages (Strict E-commerce Extraction Rule)
-GEMINI_VISION_PROMPT = (
-    "你現在是一位頂級的跨國網購商品鑑定專家。請分析這張圖片，並精準辨識出圖片中的『主體商品』。\n"
-    "執行步驟：\n"
-    "1. 放大檢視圖片中的任何文字、Logo、標籤或型號（啟動 OCR）。\n"
-    "2. 忽略背景與人物，只專注於商品本身。\n"
-    "3. 如果是動漫公仔，請找出『角色名稱＋作品名稱』。如果是 3C、相機或運動用品，請找出『品牌＋精確型號』。\n"
-    "4. 【絕對限制】：請『只』輸出最精確的商品搜尋關鍵字（例如：'Fujifilm X100V 黑色' 或 '薩爾達傳說 王國之淚 林克 Amiibo'），絕對不要輸出完整的句子或描述性廢話。"
-)
-
-
 from contextlib import asynccontextmanager
 
 # Predefined Hot Keywords for Background Cache Pre-warming
@@ -181,27 +148,11 @@ async def prewarm_search_cache() -> None:
     logger.info("🔥 [Cache Pre-warm] Starting background cache pre-warming for hot keywords...")
     for kw in PREWARM_KEYWORDS:
         try:
-            cache_key = f"flex:{normalize_search_keyword(kw)}"
-            if cache_key in search_cache:
+            # 只快取完整比價結果：啟動時抓價失敗不應讓使用者一小時內都拿到無價格的卡片
+            result = await compare_prices(text=kw, cache=TTLCache())
+            if not result.is_full:
                 continue
-            parsed_item = await parse_fb_post(post_text=kw)
-            jp_task = scrape_buyee_prices(parsed_item.search_query_ja)
-            tw_task = search_taiwanese_platforms(parsed_item.keyword_zh)
-            cn_task = search_chinese_platforms(parsed_item.keyword_zh)
-            scraper_result, tw_result, cn_result = await asyncio.gather(jp_task, tw_task, cn_task)
-            pricing_result = calculate_landed_cost(price_jpy=scraper_result.median_price_jpy)
-            flex_dict = build_price_comparison_flex(
-                parsed_item=parsed_item,
-                pricing_result=pricing_result,
-                scraper_result=scraper_result,
-                affiliate_id=settings.buyee_affiliate_id,
-                affiliate_base_url=settings.affiliate_base_url,
-                shopee_affiliate_base_url=settings.shopee_affiliate_base_url,
-                taobao_affiliate_base_url=settings.taobao_affiliate_base_url,
-                yahoo_tw_affiliate_base_url=settings.yahoo_tw_affiliate_base_url,
-            )
-            alt_text = f"【比價分析】{parsed_item.franchise} {parsed_item.character}".strip()
-            search_cache.set(cache_key, {"flex_dict": flex_dict, "alt_text": alt_text}, ttl=3600.0)
+            search_cache.set(comparison_cache_key(kw), result, ttl=3600.0)
             logger.info(f"🔥 [Cache Pre-warm] Successfully pre-warmed cache for: '{kw}'")
         except Exception as exc:
             logger.debug(f"Cache pre-warm skipped for '{kw}': {exc}")
@@ -427,148 +378,10 @@ async def handle_line_events(events: list, access_token: str) -> None:
                 except Exception as anim_exc:
                     logger.debug(f"Failed to show loading animation (non-critical): {anim_exc}")
 
-            # Step 0.5: Check 1-hour TTL Cache for exact keyword search queries
-            cache_key = f"flex:{normalize_search_keyword(user_text)}" if user_text else None
-            if cache_key:
-                cached_data = search_cache.get(cache_key)
-                if cached_data and isinstance(cached_data, dict) and "flex_dict" in cached_data:
-                    logger.info(f"⚡ [Cache Hit] Instantly returning cached Flex Message for query: '{user_text}'")
-                    flex_container = FlexContainer.from_dict(cached_data["flex_dict"])
-                    reply_msg = FlexMessage(alt_text=cached_data.get("alt_text", "【比價分析】"), contents=flex_container)
-                    await line_bot_api.reply_message(
-                        ReplyMessageRequest(
-                            reply_token=event.reply_token,
-                            messages=[reply_msg],
-                        )
-                    )
-                    continue
-
-            parsed_item: Optional[ParsedItem] = None
-            rakuten_price: Optional[int] = None
-            mercari_api_price: Optional[int] = None
-            shopee_price: Optional[int] = None
-
             try:
-                # Step 1: Multimodal Entity Extraction & Japanese/Chinese Search Query Generation
-                parsed_item = await parse_fb_post(
-                    post_text=user_text,
-                    image_data=image_bytes,
-                    vision_prompt=GEMINI_VISION_PROMPT if image_bytes else None,
-                )
-
-                # Silent Execution: Directly use perfected_keyword across all regional searches
-                effective_keyword = (
-                    parsed_item.perfected_keyword
-                    or parsed_item.keyword_zh
-                    or f"{parsed_item.franchise} {parsed_item.character}"
-                ).strip()
-                effective_jp_keyword = (
-                    parsed_item.search_query_ja
-                    or parsed_item.keyword_jp
-                    or effective_keyword
-                ).strip()
-
-                logger.info(
-                    f"⚡ [Silent Auto-Correction] Searching TW/JP/CN with perfected keyword: '{effective_keyword}' (JP: '{effective_jp_keyword}')"
-                )
-
-                # Step 2: Concurrently Search Japanese, Chinese, and Taiwanese platforms simultaneously (top 15 listings)
-                jp_task = scrape_buyee_prices(effective_jp_keyword, max_items=15)
-                tw_task = search_taiwanese_platforms(effective_keyword)
-                cn_task = search_chinese_platforms(effective_keyword)
-                rakuten_task = fetch_rakuten_min_price(effective_jp_keyword, timeout_seconds=8.0)
-                mercari_task = fetch_mercari_api_price(
-                    effective_jp_keyword,
-                    timeout_seconds=8.0,
-                    estimated_min_usd=parsed_item.estimated_min_usd if parsed_item else None,
-                )
-                shopee_task = fetch_shopee_api_price(
-                    effective_keyword,
-                    timeout_seconds=8.0,
-                    estimated_min_usd=parsed_item.estimated_min_usd if parsed_item else None,
-                )
-                results = await asyncio.gather(
-                    jp_task, tw_task, cn_task, rakuten_task, mercari_task, shopee_task,
-                    return_exceptions=True,
-                )
-                scraper_result, tw_result, cn_result, r_price, m_price, s_price = results
-                rakuten_price = r_price if (isinstance(r_price, int) and r_price > 0) else None
-                mercari_api_price = m_price if (isinstance(m_price, int) and m_price > 0) else None
-                shopee_price = s_price if (isinstance(s_price, int) and s_price > 0) else None
-                if isinstance(tw_result, Exception):
-                    logger.warning(f"TW search failed: {tw_result}")
-                    tw_result = None
-                if isinstance(cn_result, Exception):
-                    logger.warning(f"CN search failed: {cn_result}")
-                    cn_result = None
-
-                # If Buyee scraper raised an exception, route to fallback while preserving already fetched prices
-                if isinstance(scraper_result, Exception):
-                    raise scraper_result
-
-                # Step 3: Compute Landed Cost & Markup Analysis
-                fb_price = (
-                    float(parsed_item.fb_price_twd)
-                    if parsed_item.fb_price_twd is not None
-                    else None
-                )
-                pricing_result = calculate_landed_cost(
-                    price_jpy=scraper_result.median_price_jpy,
-                    fb_price_twd=fb_price,
-                )
-
-                # Step 4: Dynamic Price Calculation (outlier removal, 1.5% overseas conversion, min/avg range)
-                platform_raw_prices = {
-                    "mercari": scraper_result.sample_prices if scraper_result else [],
-                    "shopee": getattr(tw_result, "sample_prices", []),
-                    "yahoo_tw": getattr(tw_result, "sample_prices", []),
-                    "taobao": getattr(cn_result, "sample_prices", []),
-                }
-                dynamic_pricing = calculate_dynamic_platform_prices(
-                    platform_raw_prices=platform_raw_prices,
-                )
-                if rakuten_price and rakuten_price > 0:
-                    dynamic_pricing.rakuten_min_price = rakuten_price
-                    dynamic_pricing.platform_min_prices["rakuten"] = rakuten_price
-                if mercari_api_price and mercari_api_price > 0:
-                    dynamic_pricing.mercari_min_price = mercari_api_price
-                    dynamic_pricing.platform_min_prices["mercari"] = mercari_api_price
-                if shopee_price and shopee_price > 0:
-                    dynamic_pricing.shopee_min_price = shopee_price
-                    dynamic_pricing.platform_min_prices["shopee"] = shopee_price
-
-                mercari_display_price = (
-                    f"{mercari_api_price}起"
-                    if (mercari_api_price and mercari_api_price > 0)
-                    else dynamic_pricing.mercari_min_price
-                )
-
-                # Step 5: Build LINE Flex Message UI with Dynamic Price Range & Platform Minimums
-                flex_dict = build_price_comparison_flex(
-                    parsed_item=parsed_item,
-                    pricing_result=pricing_result,
-                    scraper_result=scraper_result,
-                    affiliate_id=settings.buyee_affiliate_id,
-                    affiliate_base_url=settings.affiliate_base_url,
-                    shopee_affiliate_base_url=settings.shopee_affiliate_base_url,
-                    taobao_affiliate_base_url=settings.taobao_affiliate_base_url,
-                    yahoo_tw_affiliate_base_url=settings.yahoo_tw_affiliate_base_url,
-                    perfected_keyword=effective_keyword,
-                    min_price=dynamic_pricing.min_price,
-                    avg_price=dynamic_pricing.avg_price,
-                    mercari_min_price=mercari_display_price,
-                    shopee_min_price=dynamic_pricing.shopee_min_price,
-                    taobao_min_price=dynamic_pricing.taobao_min_price,
-                    yahoo_tw_min_price=dynamic_pricing.yahoo_tw_min_price,
-                    yahoo_jp_min_price=dynamic_pricing.yahoo_jp_min_price,
-                    rakuten_min_price=dynamic_pricing.rakuten_min_price,
-                    enable_dynamic_buttons=True,
-                )
-                flex_dict = inject_shopee_button_to_flex(flex_dict, shopee_price)
-                flex_container = FlexContainer.from_dict(flex_dict)
-                alt_text = f"【比價分析】{effective_keyword}".strip()
-
-                reply_msg = FlexMessage(alt_text=alt_text, contents=flex_container)
+                result = await compare_prices(text=user_text, image=image_bytes)
+                flex_dict, alt_text = build_comparison_flex(result)
+                reply_msg = FlexMessage(alt_text=alt_text, contents=FlexContainer.from_dict(flex_dict))
                 await line_bot_api.reply_message(
                     ReplyMessageRequest(
                         reply_token=event.reply_token,
@@ -576,109 +389,6 @@ async def handle_line_events(events: list, access_token: str) -> None:
                     )
                 )
                 logger.info("Successfully replied with Flex Message comparison card.")
-
-                # Save successful result to 1-hour TTL cache
-                if cache_key:
-                    search_cache.set(cache_key, {"flex_dict": flex_dict, "alt_text": alt_text}, ttl=3600.0)
-
-            except (ScrapingTimeoutError, ScrapingBlockedError, ScrapingError, IrrelevantPostError) as exc:
-                logger.warning(f"Scraping/Parsing fallback ({type(exc).__name__}): {exc}")
-                fallback_kw = (
-                    (parsed_item.perfected_keyword or parsed_item.keyword_zh)
-                    if parsed_item and (parsed_item.perfected_keyword or parsed_item.keyword_zh)
-                    else (user_text[:30] if user_text else "熱門商品")
-                )
-                kw_jp = (
-                    parsed_item.keyword_jp or parsed_item.search_query_ja
-                    if parsed_item
-                    else "人気商品"
-                )
-                kw_zh = fallback_kw
-                search_url = getattr(exc, "search_url", None) or f"https://buyee.jp/mercari/search?keyword={urllib.parse.quote(kw_jp)}"
-                item_title = (
-                    (parsed_item.perfected_keyword or f"{parsed_item.franchise} {parsed_item.character}").strip()
-                    if parsed_item and (parsed_item.perfected_keyword or parsed_item.franchise or parsed_item.character)
-                    else kw_zh
-                )
-
-                # Attempt fast lightweight fetch if applicable (reuse successful prices from Step 2 if present)
-                rakuten_fallback_price = rakuten_price if (isinstance(rakuten_price, int) and rakuten_price > 0) else None
-                mercari_fallback_price = mercari_api_price if (isinstance(mercari_api_price, int) and mercari_api_price > 0) else None
-                shopee_fallback_price = shopee_price if (isinstance(shopee_price, int) and shopee_price > 0) else None
-
-                # Only attempt network fetch if not already retrieved in Step 2
-                if rakuten_fallback_price is None or mercari_fallback_price is None or shopee_fallback_price is None:
-                    try:
-                        fb_tasks = []
-                        fb_keys = []
-                        if rakuten_fallback_price is None:
-                            fb_tasks.append(fetch_rakuten_min_price(kw_jp, timeout_seconds=8.0))
-                            fb_keys.append("rakuten")
-                        if mercari_fallback_price is None:
-                            fb_tasks.append(fetch_mercari_api_price(
-                                kw_jp,
-                                timeout_seconds=8.0,
-                                estimated_min_usd=parsed_item.estimated_min_usd if parsed_item else None,
-                            ))
-                            fb_keys.append("mercari")
-                        if shopee_fallback_price is None:
-                            fb_tasks.append(fetch_shopee_api_price(
-                                kw_zh,
-                                timeout_seconds=8.0,
-                                estimated_min_usd=parsed_item.estimated_min_usd if parsed_item else None,
-                            ))
-                            fb_keys.append("shopee")
-
-                        if fb_tasks:
-                            fb_results = await asyncio.gather(*fb_tasks, return_exceptions=True)
-                            for key, res in zip(fb_keys, fb_results):
-                                if isinstance(res, int) and res > 0:
-                                    if key == "rakuten":
-                                        rakuten_fallback_price = res
-                                    elif key == "mercari":
-                                        mercari_fallback_price = res
-                                    elif key == "shopee":
-                                        shopee_fallback_price = res
-                    except Exception:
-                        pass
-
-                keyword_flex_dict = build_keyword_flex_message(
-                    japanese_keyword=kw_jp,
-                    search_url=search_url,
-                    affiliate_id=settings.buyee_affiliate_id,
-                    item_title=item_title,
-                    affiliate_base_url=settings.affiliate_base_url,
-                    keyword_zh=kw_zh,
-                    shopee_affiliate_base_url=settings.shopee_affiliate_base_url,
-                    taobao_affiliate_base_url=settings.taobao_affiliate_base_url,
-                    yahoo_tw_affiliate_base_url=settings.yahoo_tw_affiliate_base_url,
-                    perfected_keyword=fallback_kw if parsed_item else None,
-                    min_price=None,
-                    avg_price=None,
-                    mercari_min_price=f"{mercari_fallback_price}起" if mercari_fallback_price else None,
-                    shopee_min_price=shopee_fallback_price,
-                    taobao_min_price=None,
-                    yahoo_tw_min_price=None,
-                    yahoo_jp_min_price=None,
-                    rakuten_min_price=rakuten_fallback_price,
-                    enable_dynamic_buttons=True,
-                )
-                keyword_flex_dict = inject_shopee_button_to_flex(keyword_flex_dict, shopee_fallback_price)
-                flex_container = FlexContainer.from_dict(keyword_flex_dict)
-                reply_msg = FlexSendMessage(
-                    alt_text="比價成功，來去撈便宜～",
-                    contents=flex_container,
-                )
-                await line_bot_api.reply_message(
-                    ReplyMessageRequest(
-                        reply_token=event.reply_token,
-                        messages=[reply_msg],
-                    )
-                )
-
-                # Cache keyword fallback card too
-                if cache_key:
-                    search_cache.set(cache_key, {"flex_dict": keyword_flex_dict, "alt_text": "比價成功，來去撈便宜～"}, ttl=3600.0)
 
             except GeminiServerError as exc:
                 logger.warning(f"Gemini server error (503 UNAVAILABLE): {exc}")

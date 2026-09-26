@@ -9,8 +9,9 @@ from fastapi.testclient import TestClient
 from linebot.v3.messaging import FlexMessage, TextMessage
 
 from main import app, settings
-from services.parser import ParsedItem
+from services.parser import ParsedItem, parse_fb_post
 from services.scraper import ScrapingError, ScrapingResult, ScrapingTimeoutError
+from tests.fakes import FakeParser, fake_fetchers, pipeline_with, returning
 
 client = TestClient(app)
 
@@ -77,11 +78,7 @@ def create_line_image_payload(message_id: str = "img_msg_1001") -> str:
 
 @patch("main.AsyncApiClient")
 @patch("main.AsyncMessagingApi")
-@patch("main.scrape_buyee_prices")
-@patch("main.parse_fb_post")
 def test_end_to_end_pipeline_success(
-    mock_parse_fb_post,
-    mock_scrape_buyee_prices,
     mock_messaging_api_class,
     mock_api_client_class,
 ):
@@ -89,7 +86,7 @@ def test_end_to_end_pipeline_success(
     mock_api = AsyncMock()
     mock_messaging_api_class.return_value = mock_api
 
-    mock_parse_fb_post.return_value = ParsedItem(
+    parser = FakeParser(ParsedItem(
         franchise="ハイキュー!!",
         character="影山飛雄",
         item_type="もちもちマスコット",
@@ -97,9 +94,9 @@ def test_end_to_end_pipeline_success(
         search_query_ja="ハイキュー 影山 もちもちマスコット 2020",
         fb_price_twd=1500,
         is_anime_merch=True,
-    )
+    ))
 
-    mock_scrape_buyee_prices.return_value = ScrapingResult(
+    buyee = returning(ScrapingResult(
         query="ハイキュー 影山 もちもちマスコット 2020",
         search_url="https://buyee.jp/mercari/search?keyword=test",
         lowest_price_jpy=1200.0,
@@ -107,7 +104,7 @@ def test_end_to_end_pipeline_success(
         representative_image_url="https://static.mercdn.net/item/detail/orig/photos/m1.jpg",
         sample_prices=[1200.0, 1500.0, 1800.0],
         total_found=3,
-    )
+    ))
 
     secret = "secret_integration_test"
     token = "token_integration_test"
@@ -115,7 +112,8 @@ def test_end_to_end_pipeline_success(
     body_str = create_line_text_payload(post_text)
     signature = generate_signature(secret, body_str)
 
-    with patch.object(settings, "line_channel_secret", secret), \
+    with patch("main.compare_prices", pipeline_with(parser, fake_fetchers(buyee=buyee))), \
+         patch.object(settings, "line_channel_secret", secret), \
          patch.object(settings, "line_channel_access_token", token), \
          patch.object(settings, "buyee_affiliate_id", "aff_tag_123"):
 
@@ -143,11 +141,7 @@ def test_end_to_end_pipeline_success(
 
 @patch("main.AsyncApiClient")
 @patch("main.AsyncMessagingApi")
-@patch("main.scrape_buyee_prices")
-@patch("main.parse_fb_post")
 def test_end_to_end_pipeline_with_affiliate_base_url(
-    mock_parse_fb_post,
-    mock_scrape_buyee_prices,
     mock_messaging_api_class,
     mock_api_client_class,
 ):
@@ -155,16 +149,16 @@ def test_end_to_end_pipeline_with_affiliate_base_url(
     mock_api = AsyncMock()
     mock_messaging_api_class.return_value = mock_api
 
-    mock_parse_fb_post.return_value = ParsedItem(
+    parser = FakeParser(ParsedItem(
         franchise="Sony",
         character="WH-1000XM5",
         item_type="ヘッドホン",
         search_query_ja="Sony WH-1000XM5 ヘッドホン",
         fb_price_twd=8000,
         is_anime_merch=True,
-    )
+    ))
 
-    mock_scrape_buyee_prices.return_value = ScrapingResult(
+    buyee = returning(ScrapingResult(
         query="Sony WH-1000XM5 ヘッドホン",
         search_url="https://buyee.jp/mercari/search?keyword=Sony%20WH-1000XM5",
         lowest_price_jpy=28000.0,
@@ -172,7 +166,7 @@ def test_end_to_end_pipeline_with_affiliate_base_url(
         representative_image_url="https://static.mercdn.net/item/detail/orig/photos/sony.jpg",
         sample_prices=[28000.0, 32000.0],
         total_found=2,
-    )
+    ))
 
     secret = "secret_integration_test"
     token = "token_integration_test"
@@ -184,7 +178,8 @@ def test_end_to_end_pipeline_with_affiliate_base_url(
     shopee_aff_base = "https://affiliate.shopee.example.com/click"
     taobao_aff_base = "https://affiliate.taobao.example.com/click"
     yahoo_tw_aff_base = "https://affiliate.yahoo-tw.example.com/click"
-    with patch.object(settings, "line_channel_secret", secret), \
+    with patch("main.compare_prices", pipeline_with(parser, fake_fetchers(buyee=buyee))), \
+         patch.object(settings, "line_channel_secret", secret), \
          patch.object(settings, "line_channel_access_token", token), \
          patch.object(settings, "buyee_affiliate_id", "aff_123"), \
          patch.object(settings, "affiliate_base_url", aff_base), \
@@ -265,11 +260,7 @@ def test_end_to_end_pipeline_with_affiliate_base_url(
 @patch("main.AsyncMessagingApiBlob")
 @patch("main.AsyncApiClient")
 @patch("main.AsyncMessagingApi")
-@patch("main.scrape_buyee_prices")
-@patch("main.parse_fb_post")
 def test_end_to_end_image_message_success(
-    mock_parse_fb_post,
-    mock_scrape_buyee_prices,
     mock_messaging_api_class,
     mock_api_client_class,
     mock_blob_api_class,
@@ -282,16 +273,16 @@ def test_end_to_end_image_message_success(
     mock_blob_api.get_message_content = AsyncMock(return_value=b"fake_image_bytes_123")
     mock_blob_api_class.return_value = mock_blob_api
 
-    mock_parse_fb_post.return_value = ParsedItem(
+    parser = FakeParser(ParsedItem(
         franchise="Sony",
         character="WH-1000XM5",
         item_type="ヘッドホン",
         search_query_ja="Sony WH-1000XM5 ヘッドホン",
         fb_price_twd=None,
         is_anime_merch=True,
-    )
+    ))
 
-    mock_scrape_buyee_prices.return_value = ScrapingResult(
+    buyee = returning(ScrapingResult(
         query="Sony WH-1000XM5 ヘッドホン",
         search_url="https://buyee.jp/mercari/search?keyword=Sony%20WH-1000XM5",
         lowest_price_jpy=28000.0,
@@ -299,14 +290,15 @@ def test_end_to_end_image_message_success(
         representative_image_url="https://static.mercdn.net/item/detail/orig/photos/sony.jpg",
         sample_prices=[28000.0, 32000.0, 35000.0],
         total_found=3,
-    )
+    ))
 
     secret = "secret_integration_test"
     token = "token_integration_test"
     body_str = create_line_image_payload("img_12345")
     signature = generate_signature(secret, body_str)
 
-    with patch.object(settings, "line_channel_secret", secret), \
+    with patch("main.compare_prices", pipeline_with(parser, fake_fetchers(buyee=buyee))), \
+         patch.object(settings, "line_channel_secret", secret), \
          patch.object(settings, "line_channel_access_token", token):
 
         response = client.post(
@@ -321,11 +313,9 @@ def test_end_to_end_image_message_success(
         assert response.status_code == 200
         mock_blob_api.get_message_content.assert_awaited_once_with("img_12345")
         from main import GEMINI_VISION_PROMPT
-        mock_parse_fb_post.assert_awaited_once_with(
-            post_text=None,
-            image_data=b"fake_image_bytes_123",
-            vision_prompt=GEMINI_VISION_PROMPT,
-        )
+        assert parser.calls == [
+            dict(post_text=None, image_data=b"fake_image_bytes_123", vision_prompt=GEMINI_VISION_PROMPT)
+        ]
         mock_api.show_loading_animation.assert_awaited_once()
         mock_api.reply_message.assert_awaited_once()
 
@@ -356,7 +346,9 @@ def test_end_to_end_vague_input_flex_fallback(
         "is_anime_merch": True,
     })
 
+    # 真實 AI 解析器（只換掉 Gemini client），平台換成不連網的假轉接器
     with patch("services.parser.genai.Client") as mock_genai_client_class, \
+         patch("main.compare_prices", pipeline_with(parse_fb_post)), \
          patch.object(settings, "line_channel_secret", secret), \
          patch.object(settings, "line_channel_access_token", token), \
          patch.object(settings, "gemini_api_key", "dummy_key"):
@@ -396,11 +388,7 @@ def test_end_to_end_vague_input_flex_fallback(
 
 @patch("main.AsyncApiClient")
 @patch("main.AsyncMessagingApi")
-@patch("main.scrape_buyee_prices")
-@patch("main.parse_fb_post")
 def test_end_to_end_scraper_timeout_fallback(
-    mock_parse_fb_post,
-    mock_scrape_buyee_prices,
     mock_messaging_api_class,
     mock_api_client_class,
 ):
@@ -408,26 +396,27 @@ def test_end_to_end_scraper_timeout_fallback(
     mock_api = AsyncMock()
     mock_messaging_api_class.return_value = mock_api
 
-    mock_parse_fb_post.return_value = ParsedItem(
+    parser = FakeParser(ParsedItem(
         franchise="Sony",
         character="WH-1000XM5",
         item_type="ヘッドホン",
         search_query_ja="Sony WH-1000XM5 ヘッドホン",
         fb_price_twd=8000,
         is_anime_merch=True,
-    )
-    mock_scrape_buyee_prices.side_effect = ScrapingTimeoutError(
+    ))
+    buyee = returning(ScrapingTimeoutError(
         "Timeout",
         search_url="https://buyee.jp/mercari/search?keyword=Sony%20WH-1000XM5",
         query="Sony WH-1000XM5",
-    )
+    ))
 
     secret = "secret_integration_test"
     token = "token_integration_test"
     body_str = create_line_text_payload("售 Sony WH-1000XM5 8000")
     signature = generate_signature(secret, body_str)
 
-    with patch.object(settings, "line_channel_secret", secret), \
+    with patch("main.compare_prices", pipeline_with(parser, fake_fetchers(buyee=buyee))), \
+         patch.object(settings, "line_channel_secret", secret), \
          patch.object(settings, "line_channel_access_token", token):
 
         response = client.post(
@@ -449,11 +438,7 @@ def test_end_to_end_scraper_timeout_fallback(
 
 @patch("main.AsyncApiClient")
 @patch("main.AsyncMessagingApi")
-@patch("main.scrape_buyee_prices")
-@patch("main.parse_fb_post")
 def test_end_to_end_scraper_error_fallback(
-    mock_parse_fb_post,
-    mock_scrape_buyee_prices,
     mock_messaging_api_class,
     mock_api_client_class,
 ):
@@ -461,26 +446,27 @@ def test_end_to_end_scraper_error_fallback(
     mock_api = AsyncMock()
     mock_messaging_api_class.return_value = mock_api
 
-    mock_parse_fb_post.return_value = ParsedItem(
+    parser = FakeParser(ParsedItem(
         franchise="鬼滅之刃",
         character="炭治郎",
         item_type="徽章",
         search_query_ja="鬼滅の刃 炭治郎 缶バッジ",
         fb_price_twd=300,
         is_anime_merch=True,
-    )
-    mock_scrape_buyee_prices.side_effect = ScrapingError(
+    ))
+    buyee = returning(ScrapingError(
         "No listings found",
         search_url="https://buyee.jp/mercari/search?keyword=test",
         query="test",
-    )
+    ))
 
     secret = "secret_integration_test"
     token = "token_integration_test"
     body_str = create_line_text_payload("售 鬼滅 炭治郎 徽章 300")
     signature = generate_signature(secret, body_str)
 
-    with patch.object(settings, "line_channel_secret", secret), \
+    with patch("main.compare_prices", pipeline_with(parser, fake_fetchers(buyee=buyee))), \
+         patch.object(settings, "line_channel_secret", secret), \
          patch.object(settings, "line_channel_access_token", token):
 
         response = client.post(
@@ -502,9 +488,7 @@ def test_end_to_end_scraper_error_fallback(
 
 @patch("main.AsyncApiClient")
 @patch("main.AsyncMessagingApi")
-@patch("main.parse_fb_post")
 def test_end_to_end_gemini_server_error_fallback(
-    mock_parse_fb_post,
     mock_messaging_api_class,
     mock_api_client_class,
 ):
@@ -514,14 +498,15 @@ def test_end_to_end_gemini_server_error_fallback(
     mock_api = AsyncMock()
     mock_messaging_api_class.return_value = mock_api
 
-    mock_parse_fb_post.side_effect = GeminiServerError("目前 AI 伺服器大塞車，請稍等一兩分鐘後再試一次喔！")
+    parser = FakeParser(error=GeminiServerError("目前 AI 伺服器大塞車，請稍等一兩分鐘後再試一次喔！"))
 
     secret = "secret_integration_test"
     token = "token_integration_test"
     body_str = create_line_text_payload("售 Sony WH-1000XM5 8000")
     signature = generate_signature(secret, body_str)
 
-    with patch.object(settings, "line_channel_secret", secret), \
+    with patch("main.compare_prices", pipeline_with(parser, None)), \
+         patch.object(settings, "line_channel_secret", secret), \
          patch.object(settings, "line_channel_access_token", token):
 
         response = client.post(
@@ -543,9 +528,7 @@ def test_end_to_end_gemini_server_error_fallback(
 
 @patch("main.AsyncApiClient")
 @patch("main.AsyncMessagingApi")
-@patch("main.parse_fb_post")
 def test_end_to_end_gemini_rate_limit_fallback(
-    mock_parse_fb_post,
     mock_messaging_api_class,
     mock_api_client_class,
 ):
@@ -555,14 +538,15 @@ def test_end_to_end_gemini_rate_limit_fallback(
     mock_api = AsyncMock()
     mock_messaging_api_class.return_value = mock_api
 
-    mock_parse_fb_post.side_effect = GeminiRateLimitError("目前查詢人數較多，請稍後再試！")
+    parser = FakeParser(error=GeminiRateLimitError("目前查詢人數較多，請稍後再試！"))
 
     secret = "secret_integration_test"
     token = "token_integration_test"
     body_str = create_line_text_payload("售 Sony WH-1000XM5 8000")
     signature = generate_signature(secret, body_str)
 
-    with patch.object(settings, "line_channel_secret", secret), \
+    with patch("main.compare_prices", pipeline_with(parser, None)), \
+         patch.object(settings, "line_channel_secret", secret), \
          patch.object(settings, "line_channel_access_token", token):
 
         response = client.post(
