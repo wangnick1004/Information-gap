@@ -27,7 +27,6 @@ from linebot.v3.messaging import (
 )
 from linebot.v3.webhook import WebhookParser
 from linebot.v3.webhooks import FollowEvent, ImageMessageContent, MessageEvent, TextMessageContent
-from mangum import Mangum
 from pydantic import BaseModel
 from config import Settings, settings
 from services.flex_builder import (
@@ -481,13 +480,11 @@ async def handle_line_events(events: list, access_token: str) -> None:
                 mercari_task = fetch_mercari_api_price(
                     effective_jp_keyword,
                     timeout_seconds=8.0,
-                    enable_mock=False,
                     estimated_min_usd=parsed_item.estimated_min_usd if parsed_item else None,
                 )
                 shopee_task = fetch_shopee_api_price(
                     effective_keyword,
                     timeout_seconds=8.0,
-                    enable_mock=False,
                     estimated_min_usd=parsed_item.estimated_min_usd if parsed_item else None,
                 )
                 results = await asyncio.gather(
@@ -621,7 +618,6 @@ async def handle_line_events(events: list, access_token: str) -> None:
                             fb_tasks.append(fetch_mercari_api_price(
                                 kw_jp,
                                 timeout_seconds=8.0,
-                                enable_mock=False,
                                 estimated_min_usd=parsed_item.estimated_min_usd if parsed_item else None,
                             ))
                             fb_keys.append("mercari")
@@ -629,7 +625,6 @@ async def handle_line_events(events: list, access_token: str) -> None:
                             fb_tasks.append(fetch_shopee_api_price(
                                 kw_zh,
                                 timeout_seconds=8.0,
-                                enable_mock=False,
                                 estimated_min_usd=parsed_item.estimated_min_usd if parsed_item else None,
                             ))
                             fb_keys.append("shopee")
@@ -788,10 +783,6 @@ async def line_webhook(
         return Response(content="OK", media_type="text/plain", status_code=status.HTTP_200_OK)
 
     return Response(content="OK", media_type="text/plain", status_code=status.HTTP_200_OK)
-
-
-# Mangum handler for AWS Lambda / Netlify Serverless Functions
-handler = Mangum(app, lifespan="off")
 
 
 async def fetch_and_generate_flex_message(

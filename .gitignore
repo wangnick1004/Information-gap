@@ -4,5 +4,4 @@ __pycache__/
 *.py[cod]
 .env
 .pytest_cache/
-.netlify/
 .DS_Store

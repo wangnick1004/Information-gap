@@ -28,7 +28,6 @@ class Settings(BaseSettings):
     shopee_api_url: Optional[str] = Field(default=None, alias="SHOPEE_API_URL")
     serpapi_key: Optional[str] = Field(default=None, alias="SERPAPI_KEY")
     third_party_api_token: Optional[str] = Field(default=None, alias="THIRD_PARTY_API_TOKEN")
-    enable_mock_price_fetcher: bool = Field(default=True, alias="ENABLE_MOCK_PRICE_FETCHER")
 
     model_config = SettingsConfigDict(
         env_file=".env",

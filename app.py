@@ -20,7 +20,6 @@ from main import (  # noqa: F401
     fetch_mercari_min_price,
     fetch_rakuten_min_price,
     filter_extreme_low_prices,
-    handler,
     parse_platform_first_page_prices,
     remove_outliers,
 )
@@ -49,7 +48,6 @@ from price_fetcher import (  # noqa: F401
     fetch_price,
     fetch_shopee_api_price,
     format_platform_button_component,
-    get_mock_plausible_price,
     get_shopee_active_blacklist,
     inject_mercari_button_to_flex,
     inject_shopee_button_to_flex,

@@ -421,42 +421,6 @@ def test_webhook_follow_event(mock_messaging_api_class, mock_api_client_class):
     assert "三大核心功能" in req.messages[0].text
 
 
-def test_mangum_handler():
-    """Test that the Mangum handler processes AWS Lambda / Netlify API Gateway events."""
-    import asyncio
-    try:
-        asyncio.get_event_loop()
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-
-    from main import handler
-
-    lambda_event = {
-        "resource": "/",
-        "path": "/",
-        "httpMethod": "GET",
-        "headers": {},
-        "multiValueHeaders": {},
-        "queryStringParameters": None,
-        "multiValueQueryStringParameters": None,
-        "pathParameters": None,
-        "stageVariables": None,
-        "requestContext": {
-            "resourcePath": "/",
-            "httpMethod": "GET",
-            "path": "/",
-        },
-        "body": None,
-        "isBase64Encoded": False,
-    }
-
-    response = handler(lambda_event, {})
-    assert response["statusCode"] == 200
-    body = json.loads(response["body"])
-    assert body["status"] == "healthy"
-
-
 def test_rate_limiter_logic():
     """Test unit rate limiter threshold and sliding window."""
     from main import is_rate_limited, user_request_timestamps
@@ -949,3 +913,95 @@ def test_webhook_concurrent_shopee_dispatch_and_ui_injection(
     assert "6990" in btn_label
 
 
+
+def _collect_display_texts(node):
+    """Collect every user-visible string (text / altText / button label) from a Flex dict."""
+    texts = []
+    if isinstance(node, dict):
+        for key in ("text", "altText", "label"):
+            if isinstance(node.get(key), str):
+                texts.append(node[key])
+        for v in node.values():
+            texts.extend(_collect_display_texts(v))
+    elif isinstance(node, list):
+        for item in node:
+            texts.extend(_collect_display_texts(item))
+    return texts
+
+
+@patch("main.fetch_shopee_api_price", new_callable=AsyncMock, return_value=None)
+@patch("main.fetch_mercari_api_price", new_callable=AsyncMock, return_value=None)
+@patch("main.fetch_rakuten_min_price", new_callable=AsyncMock, return_value=None)
+@patch("main.search_chinese_platforms", new_callable=AsyncMock)
+@patch("main.search_taiwanese_platforms", new_callable=AsyncMock)
+@patch("main.scrape_buyee_prices", new_callable=AsyncMock)
+@patch("main.parse_fb_post", new_callable=AsyncMock)
+@patch("main.AsyncApiClient")
+@patch("main.AsyncMessagingApi")
+def test_webhook_all_platforms_fail_shows_no_price_numbers(
+    mock_messaging_api_class,
+    mock_api_client_class,
+    mock_parse,
+    mock_scrape,
+    mock_tw,
+    mock_cn,
+    mock_rakuten,
+    mock_mercari,
+    mock_shopee,
+):
+    """When every platform fails, the reply must offer links only — never any price number."""
+    from services.parser import ParsedItem
+    from services.scraper import ScrapingError
+
+    mock_api = AsyncMock()
+    mock_messaging_api_class.return_value = mock_api
+
+    mock_parse.return_value = ParsedItem(
+        franchise="",
+        character="藍牙耳機",
+        item_type="耳機",
+        keyword_jp="ワイヤレスイヤホン",
+        keyword_zh="藍牙耳機",
+        search_query_ja="ワイヤレスイヤホン",
+        perfected_keyword="藍牙耳機",
+        fb_price_twd=None,
+    )
+    mock_scrape.side_effect = ScrapingError("blocked")
+    mock_tw.side_effect = ScrapingError("blocked")
+    mock_cn.side_effect = ScrapingError("blocked")
+
+    secret = "test_secret_allfail"
+    payload = {
+        "destination": "U1234567890",
+        "events": [
+            {
+                "type": "message",
+                "message": {"type": "text", "id": "100777", "text": "藍牙耳機", "quoteToken": "q"},
+                "timestamp": 1625641600000,
+                "source": {"type": "user", "userId": "U_allfail_user"},
+                "replyToken": "token_allfail",
+                "mode": "active",
+                "webhookEventId": "01FZ74A0TDDPYRVKNK77XKC3ZZ",
+                "deliveryContext": {"isRedelivery": False},
+            }
+        ],
+    }
+    body_str = json.dumps(payload)
+
+    with patch.object(settings, "line_channel_secret", secret), \
+         patch.object(settings, "line_channel_access_token", "test_token_allfail"):
+        response = client.post(
+            "/api/webhook",
+            content=body_str,
+            headers={"Content-Type": "application/json", "X-Line-Signature": generate_signature(secret, body_str)},
+        )
+        assert response.status_code == 200
+
+    mock_api.reply_message.assert_awaited_once()
+    reply_msg = mock_api.reply_message.call_args[0][0].messages[0]
+    assert reply_msg.type == "flex"
+
+    texts = _collect_display_texts(reply_msg.contents.to_dict())
+    assert texts, "expected a card with visible text"
+    for text in texts:
+        assert not any(ch.isdigit() for ch in text), f"price-like number shown to user: {text!r}"

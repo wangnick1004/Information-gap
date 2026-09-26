@@ -21,7 +21,6 @@ from app import (
     fetch_price,
     fetch_shopee_api_price,
     format_platform_button_component,
-    get_mock_plausible_price,
     inject_mercari_button_to_flex,
     inject_shopee_button_to_flex,
     is_placeholder_key,
@@ -154,7 +153,7 @@ async def test_security_first_no_hardcoded_key_fails_when_env_empty():
     """
     with patch.dict(os.environ, {"RAPIDAPI_KEY": ""}, clear=True), \
          patch("price_fetcher.RAPIDAPI_KEY", ""):
-        price = await fetch_mercari_api_price("ビスカリア", enable_mock=False)
+        price = await fetch_mercari_api_price("ビスカリア")
         assert price is None
 
 
@@ -310,13 +309,12 @@ def test_ui_integration_inject_mercari_button_to_flex():
 
 
 @pytest.mark.anyio
-async def test_fetch_price_mock_fallback():
-    """Test mock fallback returns plausible price when enable_mock=True."""
+async def test_fetch_price_without_credentials_returns_none():
+    """Without any API credentials, no price is made up: the result is None (link only)."""
     with patch.dict(os.environ, {"RAPIDAPI_KEY": ""}, clear=True), \
-         patch("price_fetcher.RAPIDAPI_KEY", ""):
-        price_mercari = await fetch_price("mercari", "Sony WH-1000XM5", enable_mock=True)
-        assert isinstance(price_mercari, int)
-        assert price_mercari == 1500
+         patch("price_fetcher.RAPIDAPI_KEY", ""), \
+         patch("price_fetcher.SERPAPI_KEY", ""):
+        assert await fetch_price("mercari", "Sony WH-1000XM5") is None
 
     # Empty keyword returns None
     assert await fetch_price("mercari", "") is None
@@ -713,7 +711,7 @@ async def test_fetch_price_routing_to_shopee():
     - Routes 'shopee' and 'shopee_tw' to fetch_shopee_api_price.
     - Returns integer price in TWD.
     - Gracefully falls back to None on error (to activate '(點擊查看)').
-    - Falls back to plausible mock price (1450) when no key configured and enable_mock=True.
+    - Returns None when no key is configured (never a made-up price).
     """
     mock_client = AsyncMock()
     mock_resp = MagicMock()
@@ -742,12 +740,11 @@ async def test_fetch_price_routing_to_shopee():
         price_err = await fetch_price("shopee", "Sony WH-1000XM5", client=mock_client_err)
         assert price_err is None
 
-    # 3. No credentials and enable_mock=True returns mock plausible price (1450)
+    # 3. No credentials returns None
     with patch.dict(os.environ, {"RAPIDAPI_KEY_SHOPEE": "", "RAPIDAPI_KEY": ""}, clear=True), \
          patch("price_fetcher.RAPIDAPI_KEY_SHOPEE", ""), \
          patch("price_fetcher.RAPIDAPI_KEY", ""):
-        price_mock = await fetch_price("shopee", "Sony WH-1000XM5", enable_mock=True)
-        assert price_mock == 1450
+        assert await fetch_price("shopee", "Sony WH-1000XM5") is None
 
 
 def test_ui_integration_inject_shopee_button_to_flex():

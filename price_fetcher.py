@@ -2,8 +2,8 @@
 price_fetcher.py - Third-party API Price Fetching Architecture
 
 Prepares the architecture for fetching real marketplace prices via third-party APIs
-(e.g., RapidAPI, SerpApi) with a mock fallback mechanism for Flex UI visual testing
-and strict rate-limit error handling.
+(e.g., RapidAPI, SerpApi) with strict rate-limit error handling. When no real price
+can be obtained, functions return None so the UI shows a search link instead of a price.
 """
 
 import asyncio
@@ -225,29 +225,6 @@ def is_placeholder_key(key: Optional[str]) -> bool:
     return upper.startswith("YOUR_") or "PLACEHOLDER" in upper or upper == "NONE"
 
 
-def get_mock_plausible_price(platform: str, keyword: str = "") -> int:
-    """
-    Generate a plausible mock TWD price (e.g., 1500) for UI button testing.
-
-    Args:
-        platform: Target platform ('mercari', 'rakuten', 'shopee', etc.).
-        keyword: Item search query.
-
-    Returns:
-        int: Plausible price in TWD (defaulting to 1500, or a realistic range).
-    """
-    plat = platform.lower().strip()
-    platform_defaults = {
-        "mercari": 1500,
-        "rakuten": 1650,
-        "shopee": 1450,
-        "yahoo_tw": 1550,
-        "yahoo_jp": 1380,
-        "taobao": 1280,
-    }
-    return platform_defaults.get(plat, 1500)
-
-
 async def call_mercari_scraper_api(
     jp_keyword: str,
     timeout_seconds: float = 8.0,
@@ -436,7 +413,6 @@ async def fetch_shopee_api_price(
     session: Optional[aiohttp.ClientSession] = None,
     client: Optional[Any] = None,
     estimated_min_usd: Optional[int] = None,
-    enable_mock: bool = False,
 ) -> Optional[int]:
     """
     Perform async GET request to Shopee search API on RapidAPI:
@@ -473,10 +449,6 @@ async def fetch_shopee_api_price(
     ).strip()
 
     if client is None and is_placeholder_key(api_key):
-        if enable_mock:
-            mock_p = get_mock_plausible_price("shopee", clean_kw)
-            logger.debug(f"🧪 [Mock Price Fetcher] Generated mock price for Shopee '{clean_kw}': NT${mock_p}")
-            return mock_p
         logger.warning("⚠️ [Shopee API] No RapidAPI Shopee key configured in environment.")
         return None
 
@@ -789,7 +761,6 @@ async def fetch_price(
     platform: str,
     keyword: str,
     timeout_seconds: float = 8.0,
-    enable_mock: bool = True,
     session: Optional[aiohttp.ClientSession] = None,
     client: Optional[Any] = None,
     estimated_min_usd: Optional[int] = None,
@@ -802,21 +773,19 @@ async def fetch_price(
        dispatches request to the third-party endpoint (Mercari POST or Rakuten GET).
     2. If the API rate limit is exceeded (HTTP 429) or request fails/times out,
        gracefully catches the exception, logs a warning, and returns None (activating UI fallback).
-    3. If no third-party API credentials are configured and enable_mock is True,
-       falls back to a mock implementation returning plausible prices (e.g. 1500)
-       so the Flex Message button formatting can be verified visually.
+    3. If no third-party API credentials are configured, returns None. A made-up
+       price is never returned.
 
     Args:
         platform: Marketplace platform name ('mercari', 'rakuten', 'shopee', etc.).
         keyword: Search query string.
         timeout_seconds: Strict network timeout in seconds (default 8.0s).
-        enable_mock: Whether to return plausible mock price when no API key is set (default True).
         session: Optional pre-configured aiohttp.ClientSession.
-        client: Optional pre-configured mock client.
+        client: Optional injected HTTP client (e.g. a test double).
         estimated_min_usd: Optional LLM-estimated minimum USD price threshold for filtering.
 
     Returns:
-        Optional[int]: Calculated or mock price in TWD, or None on failure/rate-limit.
+        Optional[int]: Real price in TWD, or None when unavailable/failed/rate-limited.
     """
     if not keyword or not keyword.strip():
         return None
@@ -825,34 +794,19 @@ async def fetch_price(
     plat = platform.lower().strip()
     # Route Shopee platform requests directly to fetch_shopee_api_price
     if plat in ("shopee", "shopee_tw"):
-        shopee_api_key = (
-            os.getenv("RAPIDAPI_KEY_SHOPEE")
-            if os.getenv("RAPIDAPI_KEY_SHOPEE") is not None
-            else RAPIDAPI_KEY_SHOPEE
-        )
-        has_shopee_key = not is_placeholder_key(shopee_api_key) or client is not None
-        if has_shopee_key:
-            try:
-                logger.info(f"🌐 [Third-Party API] Fetching price for {plat}: '{clean_kw}'")
-                price = await fetch_shopee_api_price(
-                    keyword=clean_kw,
-                    timeout_seconds=timeout_seconds,
-                    session=session,
-                    client=client,
-                    estimated_min_usd=estimated_min_usd,
-                    enable_mock=False,
-                )
-                if price is not None and price > 0:
-                    return price
-                return None
-            except Exception as exc:
-                logger.warning(f"⚠️ [Shopee Fetcher Failed] {exc}. Returning None for UI fallback.")
-                return None
-        elif enable_mock:
-            mock_price = get_mock_plausible_price(plat, clean_kw)
-            logger.debug(f"🧪 [Mock Price Fetcher] Generated mock price for {plat} '{clean_kw}': NT${mock_price}")
-            return mock_price
-        return None
+        try:
+            logger.info(f"🌐 [Third-Party API] Fetching price for {plat}: '{clean_kw}'")
+            price = await fetch_shopee_api_price(
+                keyword=clean_kw,
+                timeout_seconds=timeout_seconds,
+                session=session,
+                client=client,
+                estimated_min_usd=estimated_min_usd,
+            )
+        except Exception as exc:
+            logger.warning(f"⚠️ [Shopee Fetcher Failed] {exc}. Returning None for UI fallback.")
+            return None
+        return price if (price is not None and price > 0) else None
 
     # Determine whether third-party API is configured for other platforms
     has_api_key = not is_placeholder_key(RAPIDAPI_KEY) or not is_placeholder_key(SERPAPI_KEY) or client is not None
@@ -882,12 +836,6 @@ async def fetch_price(
             logger.warning(f"⚠️ [Third-Party API Failed] {exc}. Returning None for UI fallback.")
             return None
 
-    # Mock Implementation: Return plausible price (e.g., 1500) when enabled
-    if enable_mock:
-        mock_price = get_mock_plausible_price(plat, clean_kw)
-        logger.debug(f"🧪 [Mock Price Fetcher] Generated mock price for {plat} '{clean_kw}': NT${mock_price}")
-        return mock_price
-
     return None
 
 
@@ -896,7 +844,6 @@ async def fetch_mercari_api_price(
     timeout_seconds: float = 8.0,
     session: Optional[aiohttp.ClientSession] = None,
     client: Optional[Any] = None,
-    enable_mock: bool = False,
     estimated_min_usd: Optional[int] = None,
 ) -> Optional[int]:
     """
@@ -907,7 +854,6 @@ async def fetch_mercari_api_price(
         platform="mercari",
         keyword=jp_keyword,
         timeout_seconds=timeout_seconds,
-        enable_mock=enable_mock,
         session=session,
         client=client,
         estimated_min_usd=estimated_min_usd,

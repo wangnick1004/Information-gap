@@ -35,7 +35,6 @@ httpx==0.28.1
 idna==3.19
 iniconfig==2.3.0
 line-bot-sdk==3.25.0
-mangum==0.22.0
 multidict==6.7.1
 packaging==26.3
 pillow==12.3.0
