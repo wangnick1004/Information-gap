@@ -523,6 +523,8 @@ def test_webhook_string_normalization_and_silent_autocorrect(
         perfected_keyword="Nintendo Switch",
         fb_price_twd=8500,
         is_anime_merch=True,
+        # 含 Mercari 與日本雅虎的類別，才會出現 Mercari 完整比價卡
+        category="動漫周邊/玩具",
     ))
     mercari = FakeAdapter(found(25000.0, 28000.0, 30000.0, thumbnail='https://example.com/switch.jpg'))
 
@@ -615,6 +617,7 @@ def test_webhook_silent_autocorrect_even_on_zero_results(
         perfected_keyword="Sony WH-1000XM5",
         fb_price_twd=None,
         is_anime_merch=True,
+        category="3C 家電",
     ))
 
     # Scraper returns zero results
@@ -665,7 +668,8 @@ def test_webhook_silent_autocorrect_even_on_zero_results(
     header_contents = card1.header.contents
     assert header_contents[1].text == "🔎 已自動為您精準鎖定：Sony WH-1000XM5"
     c1_btns = [c for c in card1.footer.contents if getattr(c, "type", None) == "button"]
-    assert c1_btns[0].action.label in ("Mercari (點擊查看)", "Mercari (約 NT$2969起)") or c1_btns[0].action.label.startswith("Mercari (約 NT$")
+    # 3C 家電不含 Mercari：日本卡只剩日本樂天（查無結果 → 點擊查看）
+    assert [b.action.label for b in c1_btns] == ["日本樂天 (點擊查看)"]
 
 
 @patch("main.AsyncApiClient")

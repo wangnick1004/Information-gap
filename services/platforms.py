@@ -35,6 +35,9 @@ from services.search_links import (
     append_affiliate_id,
     build_buyee_rakuten_search_url,
     build_buyee_yahoo_search_url,
+    build_momo_search_url,
+    build_pchome_search_url,
+    build_ruten_search_url,
     build_shopee_search_url,
     build_taobao_search_url,
     build_yahoo_tw_search_url,
@@ -436,8 +439,9 @@ def _mercari_link(keyword: str) -> str:
 
 def build_platforms(evaluation_mode: Optional[bool] = None, http: Optional[HttpGet] = None) -> Dict[str, Platform]:
     """
-    目前的平台集合（依卡片上的順序）。evaluation_mode 未指定時依 EVALUATION_MODE 設定；
-    只有評測模式會啟用付費的 RapidAPI 轉接器。尚無轉接器的平台只提供搜尋連結。
+    候選平台池的全部平台。每次比價實際查詢哪 6 個由類別對照表（services.categories）決定。
+    evaluation_mode 未指定時依 EVALUATION_MODE 設定；只有評測模式會啟用付費的 RapidAPI 轉接器。
+    尚無轉接器的平台只提供搜尋連結。
     """
     evaluating = settings.evaluation_mode if evaluation_mode is None else evaluation_mode
     mercari_adapter: PlatformAdapter = (
@@ -463,4 +467,7 @@ def build_platforms(evaluation_mode: Optional[bool] = None, http: Optional[HttpG
         ),
         "yahoo_tw": Platform("yahoo_tw", "zh", lambda kw: build_yahoo_tw_search_url(normalize_search_keyword(kw))),
         "taobao": Platform("taobao", "zh", lambda kw: build_taobao_search_url(normalize_search_keyword(kw))),
+        "pchome": Platform("pchome", "zh", build_pchome_search_url),
+        "momo": Platform("momo", "zh", build_momo_search_url),
+        "ruten": Platform("ruten", "zh", build_ruten_search_url),
     }

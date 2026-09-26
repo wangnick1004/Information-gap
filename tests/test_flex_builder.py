@@ -576,13 +576,13 @@ def test_build_flex_button_fallbacks_when_prices_none_or_zero():
 
 # --- build_comparison_flex：卡片產生器以比價結果為輸入 ---
 
-def _links_only_result(**platform_prices):
+def _links_only_result(names=("mercari", "yahoo_jp", "rakuten", "shopee", "yahoo_tw", "taobao"), **platform_prices):
     from datetime import datetime, timezone
     from services.comparison import ComparisonResult, PlatformQuote, PlatformStatus
 
     platforms = {
         name: PlatformQuote(status=PlatformStatus.NO_MATCH, search_url=f"https://example.com/{name}")
-        for name in ("mercari", "yahoo_jp", "rakuten", "shopee", "yahoo_tw", "taobao")
+        for name in names
     }
     for name, price in platform_prices.items():
         platforms[name] = PlatformQuote(PlatformStatus.OK, price, search_url=f"https://example.com/{name}")
@@ -646,3 +646,29 @@ def test_build_comparison_flex_uses_search_links_from_result():
     assert set(_button_uris(flex_dict)) >= {
         f"https://example.com/{name}" for name in ("mercari", "yahoo_jp", "rakuten", "shopee", "yahoo_tw", "taobao")
     }
+
+
+def test_build_comparison_flex_shows_exactly_the_result_platforms_in_order():
+    from services.flex_builder import build_comparison_flex
+
+    names = ("pchome", "momo", "shopee", "yahoo_tw", "ruten", "rakuten")
+    flex_dict, _ = build_comparison_flex(_links_only_result(names=names, momo=15900))
+
+    assert _button_uris(flex_dict) == [f"https://example.com/{name}" for name in ("rakuten", "pchome", "momo", "shopee", "yahoo_tw", "ruten")]
+    labels = _button_labels(flex_dict)
+    assert "momo 購物 (約 NT$15900)" in labels
+    assert "PChome (點擊查看)" in labels
+    assert "露天拍賣 (點擊查看)" in labels
+    assert not any("Mercari" in label or "淘寶" in label for label in labels)
+    FlexContainer.from_dict(flex_dict)
+
+
+def test_build_comparison_flex_without_japanese_platforms_has_single_card():
+    from services.flex_builder import build_comparison_flex
+
+    names = ("shopee", "momo", "pchome", "yahoo_tw", "ruten", "taobao")
+    flex_dict, _ = build_comparison_flex(_links_only_result(names=names))
+
+    assert len(flex_dict["contents"]) == 1
+    assert _button_uris(flex_dict) == [f"https://example.com/{name}" for name in names]
+    FlexContainer.from_dict(flex_dict)

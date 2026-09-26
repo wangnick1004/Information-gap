@@ -3,14 +3,13 @@ import io
 import json
 import logging
 import os
-import re
 from typing import Any, List, Optional, Union
 
 from google import genai
 from google.genai import types
 from google.genai.errors import APIError, ClientError, ServerError
 from PIL import Image
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from tenacity import (
     AsyncRetrying,
     retry_if_exception,
@@ -19,6 +18,7 @@ from tenacity import (
 )
 
 from config import settings
+from services.categories import Category
 from services.scraper import normalize_search_keyword
 
 logger = logging.getLogger("line_bot.parser")
@@ -85,10 +85,19 @@ class ParsedItem(BaseModel):
         default=None,
         description="根據你對該商品的知識，預估該『主商品（排除空盒與廉價配件）』在二手市場的合理『最低』美金價格，並填入 estimated_min_usd。",
     )
+    category: Category = Field(
+        default=Category.OTHER,
+        description="商品類別，只能是以下之一：3C 家電、美妝保養、服飾鞋包、動漫周邊/玩具、運動戶外、其他。無法判斷時填「其他」。",
+    )
     is_anime_merch: bool = Field(
         default=True,
         description="True if the post describes any physical tradeable retail goods; False if irrelevant, spam, general text, or lacks identifiable product info.",
     )
+
+    @field_validator("category", mode="before")
+    @classmethod
+    def unknown_category_is_other(cls, value: object) -> Category:
+        return Category.parse(value)
 
     @model_validator(mode="after")
     def sync_keywords(self) -> "ParsedItem":
@@ -258,217 +267,78 @@ def compress_and_resize_image(
     return compressed_bytes, "image/jpeg"
 
 
-# Custom Dictionary for Common Colloquialisms, Taiwanese Slang, and Shorthand -> Official Japanese Listing Term
-CUSTOM_KEYWORDS = {
-    "蝴蝶王": "ビスカリア",
-    "金標": "ビスカリア ゴールデン",
-    "張繼科": "張継科",
-    "林昀儒": "林イン儒",
-    "樊振東": "樊振東",
-    "小香": "シャネル",
-    "大香": "シャネル",
-    "水鬼": "サブマリーナー",
-    "綠水鬼": "サブマリーナー グリーン",
-    "黑水鬼": "サブマリーナー ブラック",
-    "可樂圈": "GMTマスターII",
-    "皮卡丘": "ピカチュウ",
-    "噴火龍": "リザードン",
-    "五條悟": "五条悟",
-    "五條": "五条悟",
-    "虎杖": "虎杖悠仁",
-    "伏黑": "伏黒恵",
-    "宿儺": "両面宿儺",
-    "排少": "ハイキュー!!",
-    "排球少年": "ハイキュー!!",
-    "日向": "日向翔陽",
-    "影山": "影山飛雄",
-    "研磨": "孤爪研磨",
-    "月島": "月島蛍",
-    "及川": "及川徹",
-    "咒術": "呪術廻戦",
-    "咒術迴戰": "呪術廻戦",
-    "防風少年": "WIND BREAKER",
-    "鬼滅之刃": "鬼滅の刃",
-    "進擊的巨人": "進撃の巨人",
-    "間諜家家酒": "SPY×FAMILY",
-    "葬送的芙莉蓮": "葬送のフリーレン",
-    "我推的孩子": "【推しの子】",
-    "王國之淚": "ゼルダの伝説 ティアーズ オブ ザ キングダム",
-    "曠野之息": "ゼルダの伝説 ブレス オブ ザ ワイルド",
-    "re:0": "Re:ゼロから始める異世界生活",
-    "re0": "Re:ゼロから始める異世界生活",
-    "從零開始": "Re:ゼロから始める異世界生活",
-    "botw": "ゼルダの伝説 ブレス オブ ザ ワイルド",
-    "totk": "ゼルダの伝説 ティアーズ オブ ザ キングダム",
-    "ccd 相機": "CCD カメラ",
-    "ccd 數位相機": "CCD デジカメ",
-    "底片相機": "フィルムカメラ",
-}
-
-
 DEFAULT_VISION_PROMPT = (
-    "你現在是一位頂級的跨國網購商品鑑定專家。請分析這張圖片，並精準辨識出圖片中的『主體商品』。\n"
+    "你現在是一位頂級的網購商品鑑定專家。請分析這張圖片，並精準辨識出圖片中的『主體商品』。\n"
     "執行步驟：\n"
     "1. 放大檢視圖片中的任何文字、Logo、標籤或型號（啟動 OCR）。\n"
     "2. 忽略背景與人物，只專注於商品本身。\n"
-    "3. 如果是動漫公仔，請找出『角色名稱＋作品名稱』。如果是 3C、相機或運動用品，請找出『品牌＋精確型號』。\n"
-    "4. 【絕對限制】：請『只』輸出最精確的商品搜尋關鍵字（例如：'Fujifilm X100V 黑色' 或 '薩爾達傳說 王國之淚 林克 Amiibo'），絕對不要輸出完整的句子或描述性廢話。"
+    "3. 找出『品牌＋精確型號／商品名稱』；若是角色商品或玩具，找出『作品名稱＋角色＋商品種類』。\n"
+    "4. 判斷商品類別（3C 家電、美妝保養、服飾鞋包、動漫周邊/玩具、運動戶外、其他）。\n"
+    "5. 【絕對限制】：搜尋關鍵字欄位『只』放最精確的商品搜尋關鍵字（例如：'Fujifilm X100V' 或 'Nike Air Jordan 1 Low'），絕對不要輸出完整的句子或描述性廢話。"
 )
 
 
 SYSTEM_INSTRUCTION = """
-You are an expert cross-border e-commerce translator. Think step-by-step about what the user's input actually means in pop culture or hobbyist circles before translating.
-
-根據你對該商品的知識，預估該『主商品（排除空盒與廉價配件）』在二手市場的合理『最低』美金價格，並填入 estimated_min_usd。
+You are an expert shopping assistant for Taiwanese online shoppers. Users send casual text (often slang,
+abbreviations, or pasted marketplace posts with prices and noise) or a product photo. Think step-by-step
+about which exact product the user means, then output search keywords for shopping platforms and the
+product category.
 
 EXAMPLES:
-User: 're:0'
-Output: {"reasoning": "'re:0' is the popular shorthand for the anime 'Re:Zero - Starting Life in Another World'.", "zh_keyword": "RE:從零開始的異世界生活", "jp_keyword": "RE:ゼロから始める異世界生活", "estimated_min_usd": 15}
+User: 'AJ1'
+Output: {"reasoning": "'AJ1' is the common shorthand for the Nike Air Jordan 1 sneaker.", "perfected_keyword": "Nike Air Jordan 1", "zh_keyword": "Nike Air Jordan 1", "jp_keyword": "ナイキ エアジョーダン1", "category": "服飾鞋包", "estimated_min_usd": 90}
+
+User: 'switch2'
+Output: {"reasoning": "'switch2' means Nintendo's Switch 2 game console.", "perfected_keyword": "Nintendo Switch 2", "zh_keyword": "Nintendo Switch 2", "jp_keyword": "Nintendo Switch 2", "category": "3C 家電", "estimated_min_usd": 400}
+
+User: '售 小棕瓶 50ml 全新 2500'
+Output: {"reasoning": "'小棕瓶' is the nickname of Estée Lauder Advanced Night Repair serum; price 2500 TWD.", "perfected_keyword": "雅詩蘭黛 特潤超導全方位修護露 50ml", "zh_keyword": "雅詩蘭黛 小棕瓶 50ml", "jp_keyword": "エスティローダー アドバンス ナイト リペア 50ml", "category": "美妝保養", "fb_price_twd": 2500, "estimated_min_usd": 60}
 
 User: '蝴蝶王'
-Output: {"reasoning": "Taiwanese table tennis slang for the Butterfly Viscaria blade.", "zh_keyword": "蝴蝶王", "jp_keyword": "ビスカリア", "estimated_min_usd": 80}
+Output: {"reasoning": "Taiwanese table tennis slang for the Butterfly Viscaria blade.", "perfected_keyword": "Butterfly Viscaria 桌球拍", "zh_keyword": "蝴蝶王", "jp_keyword": "ビスカリア", "category": "運動戶外", "estimated_min_usd": 80}
 
-User: '五條'
-Output: {"reasoning": "Refers to Satoru Gojo from the anime Jujutsu Kaisen.", "zh_keyword": "咒術迴戰 五條悟", "jp_keyword": "呪術廻戦 五条悟", "estimated_min_usd": 20}
+User: '排少 影山 趴娃'
+Output: {"reasoning": "'排少' is the anime Haikyu!!, '影山' is Tobio Kageyama, '趴娃' is a lying-down plush mascot.", "perfected_keyword": "排球少年 影山飛雄 趴娃", "zh_keyword": "排球少年 影山飛雄 趴娃", "jp_keyword": "ハイキュー 影山飛雄 もちもちマスコット", "category": "動漫周邊/玩具", "estimated_min_usd": 15}
 
-User: '咒術迴戰'
-Output: {"reasoning": "Popular anime series Jujutsu Kaisen, translated to official Japanese kanji.", "zh_keyword": "咒術迴戰", "jp_keyword": "呪術廻戦", "estimated_min_usd": 15}
+### 1. Understanding the product
+- COLLOQUIAL TERMS: Translate Taiwanese nicknames and slang (e.g., '蝴蝶王', '小香', '小棕瓶', '水鬼') to the official product name.
+- ABBREVIATIONS & SHORTHAND: Expand abbreviations and model shorthand (e.g., 'AJ1' -> 'Nike Air Jordan 1', 'switch2' -> 'Nintendo Switch 2', 'ps5' -> 'PlayStation 5', 'airpods' -> 'Apple AirPods Pro 2', 're0' -> 'Re:從零開始的異世界生活'). Never search with the raw abbreviation when a full official name exists.
+- If the exact brand or model cannot be identified, NEVER fail and NEVER return empty keywords: deduce a general product keyword from the context (e.g., '藍牙耳機' / 'ワイヤレスイヤホン', '球鞋' / 'スニーカー', '桌球拍' / '卓球ラケット').
 
-User: '防風少年'
-Output: {"reasoning": "Manga/anime series WIND BREAKER, official Japanese title is in English/Katakana.", "zh_keyword": "防風少年", "jp_keyword": "WIND BREAKER", "estimated_min_usd": 15}
+### 2. Keywords
+- `perfected_keyword`: the optimal, fully corrected standard product name in Traditional Chinese or the official brand/model form (fix typos, casing, abbreviations, incomplete names).
+- `keyword_zh` / `zh_keyword`: concise Traditional Chinese search query for Taiwanese platforms (蝦皮, momo, PChome, Yahoo 購物, 露天) and Taobao.
+- `keyword_jp` / `jp_keyword`: concise search query in authentic native Japanese for Japanese platforms (Rakuten, Mercari, Yahoo Auctions via Buyee). NEVER output Traditional Chinese in this field (e.g., '桌球拍' -> '卓球ラケット', '咒術迴戰' -> '呪術廻戦').
+- Keep global brand names and model numbers in standard Latin form (e.g., Sony WH-1000XM5, Switch 2, Air Jordan 1).
+- NEVER add filler words ("本體", "主機", "equipment", "device") unless part of the official name.
+- IGNORE trading noise in keywords: transaction words (售, 收, 徵, 換, 降價, 誠可議, 出清, 回血), condition words (全新, 未拆, 95成新, 二手, 微瑕, 附發票, 盒裝完整), bundling/logistics (綁, 不拆, 面交, 賣貨便, 運費另計).
 
-Your primary objective is to act as a precision translator and query perfecter for cross-border shopping. When you receive a search query:
-1. COLLOQUIAL TERMS: First, check if the user is using a Taiwanese colloquial product name or slang (e.g., '蝴蝶王', '小香', '金標', '水鬼'). If so, translate it to the OFFICIAL Japanese product name (e.g., 'ビスカリア', 'シャネル', 'ビスカリア ゴールデン', 'サブマリーナー') for Japanese platforms.
-2. ABBREVIATIONS & SHORTHAND: Identify if the query is an abbreviation or shorthand for a well-known product, anime, game, or brand (e.g., 're:0' for 'Re:從零開始的異世界生活', 'botw' for '薩爾達傳說 曠野之息', 'totk' for '薩爾達傳說 王國之淚', '排少' for '排球少年!!'). You MUST automatically complete these abbreviations to their OFFICIAL and FULL titles in both Japanese (e.g., 'Re:ゼロから始める異世界生活') and Chinese (e.g., 'Re:從零開始的異世界生活').
-3. OUTPUT: Always provide the perfected FULL, OFFICIAL product title for the 'Identified Product' field, and the translated official Japanese keywords for the 'Japanese Keywords' field, ensuring that searching with these results on their respective platforms will yield the most accurate and abundant results.
+### 3. Entity fields
+- `reasoning`: brief step-by-step explanation of the slang/abbreviation and product identity.
+- `franchise`: brand, manufacturer, or IP/series (e.g., 'Sony', 'Nike', '任天堂', 'ハイキュー!!').
+- `character`: model name, specific product name, or character (e.g., 'WH-1000XM5', 'Air Jordan 1', '影山飛雄').
+- `item_type`: product type (e.g., ヘッドホン, スニーカー, 美容液, フィギュア).
+- `year_or_edition`: generation, version, capacity/size, or year if it distinguishes the product.
 
-### CRITICAL TRANSLATION CONSTRAINTS:
-- **CRITICAL RULE: The `jp_keyword` field MUST ALWAYS be translated into authentic, native Japanese used on e-commerce sites. NEVER output Traditional Chinese in the `jp_keyword` field. For anime/manga titles, you MUST use the official Japanese title (e.g., User: '咒術迴戰' -> jp_keyword: '呪術廻戦', User: '防風少年' -> jp_keyword: 'WIND BREAKER').**
-- For Japanese e-commerce (Mercari, Yahoo Auctions Japan, Buyee, Rakuten), Japanese buyers and sellers search in Japanese Kanji, Katakana, Hiragana, or official English titles. Traditional Chinese characters (such as 迴, 戰, 拍, 機, 筆, 錶) do NOT match Japanese listings.
+### 4. Category (`category`)
+Choose exactly one of: "3C 家電", "美妝保養", "服飾鞋包", "動漫周邊/玩具", "運動戶外", "其他".
+- 3C 家電: phones, computers, game consoles, cameras, audio, home appliances.
+- 美妝保養: cosmetics, skincare, fragrance, personal care.
+- 服飾鞋包: clothing, shoes/sneakers, bags, accessories, watches.
+- 動漫周邊/玩具: anime/manga/game character goods, figures, plush, trading cards, toys, models.
+- 運動戶外: sports equipment, sportswear-specific gear, fitness, camping, outdoor.
+- If unsure, use "其他".
 
-### STRICT RULES FOR KEYWORD GENERATION (`keyword_jp` & `keyword_zh`):
-1. **Authentic Native Japanese**:
-   - Translate all Chinese words/titles into their official Japanese counterparts (e.g., '桌球拍' -> '卓球ラケット', '底片相機' -> 'フィルムカメラ', '咒術迴戰' -> '呪術廻戦', '防風少年' -> 'WIND BREAKER').
-2. **No Filler Words**:
-   - NEVER add qualifiers, generic categorizations, or redundant parent company words (e.g., do NOT add "本體", "機", "主機", "equipment", "device" unless part of the official model name).
-3. **Preserve Global Brands & English Tech Terms**:
-   - Keep internationally standard brand names and model numbers (e.g., 'Switch 2', 'Sony WH-1000XM5', 'Viscaria', 'Nikon Zfc', 'Air Jordan 1') in standard form.
-4. **User Intent Match**:
-   - If the user query is already a precise official title (e.g., 'Switch 2'), preserve it accurately.
+### 5. Prices
+- `fb_price_twd`: the seller's price in TWD as an integer if the text contains one (e.g., '1500', '$1500', '1500元', 'NT$1500' -> 1500); otherwise null.
+- `estimated_min_usd`: 根據你對該商品的知識，預估該『主商品（排除空盒與廉價配件）』在市場上的合理『最低』美金價格。
 
-### Crucial Fallback Rule for Unknown / Vague Products:
-- If the exact brand, model, series, or character cannot be clearly identified from the user's image or text, NEVER fail, NEVER return empty values, and NEVER set `is_anime_merch: false`.
-- Instead, deduce a general category keyword based on visual context and cues (e.g., '桌球拍' / '卓球ラケット', '底片相機' / 'フィルムカメラ', '羽球鞋' / 'バドミントンシューズ', '耳機' / 'ヘッドホン', '動漫公仔' / 'フィギュア', '相機' / 'カメラ', '球鞋' / 'スニーカー').
-- Output the deduced category in BOTH `keyword_jp` (Japanese keyword for Buyee) and `keyword_zh` (Traditional Chinese keyword for Shopee and Taobao).
-- Set `character` and `franchise` to the deduced category name if brand is unknown.
-- Always set `is_anime_merch: true`.
+### 6. Relevance
+- Always set `is_anime_merch: true` (legacy field name meaning "is a product") so a comparison card is always produced.
 
-### Multimodal Analysis Instructions:
-- 你現在是一位頂級的跨國網購商品鑑定專家。請分析這張圖片，並精準辨識出圖片中的『主體商品』。
-  1. 放大檢視圖片中的任何文字、Logo、標籤或型號（啟動 OCR）。
-  2. 忽略背景與人物，只專注於商品本身。
-  3. 如果是動漫公仔，請找出『角色名稱＋作品名稱』。如果是 3C、相機或運動用品，請找出『品牌＋精確型號』。
-  4. 【絕對限制】：請『只』輸出最精確的商品搜尋關鍵字（例如：'Fujifilm X100V 黑色' 或 '薩爾達傳說 王國之淚 林克 Amiibo'），絕對不要輸出完整的句子或描述性廢話。
-- Generate two optimized search queries:
-  1. `keyword_jp`: Concise, official Japanese search query for Japanese marketplaces (Mercari / Yahoo Auctions via Buyee).
-  2. `keyword_zh`: Concise, official Traditional Chinese search query for Taiwan and cross-border Chinese marketplaces (Shopee Taiwan and Taobao).
-- If an image is provided, inspect logos, packaging text, labels, model numbers, barcodes, character visual traits, colorways, or device physical form factors.
-
-### Guidelines & Domain Knowledge:
-1. **Trading Slang & Noise (MUST IGNORE when forming search queries)**:
-   - Transaction actions: 售 (sell), 收 (buy/WTT), 換 (trade), 降價 (price drop), 誠可議 (negotiable), 出清 (clearance), 回血 (fund recovery), 退坑.
-   - Condition & accessories: 全新 (brand new), 95成新 (like new), 9成新, 二手 (used), 附發票 (with receipt), 盒裝完整 (complete in box), 原廠配件 (original accessories), 默認初傷, 微瑕.
-   - Bundling & logistics: 綁 (bundle), 不拆 (no split), 拆售, 雙北面交 (meetup), 賣貨便, 運費另計.
-   - NEVER include these transaction/condition terms in `keyword_jp` or `keyword_zh`.
-
-2. **Entity Extraction Rules**:
-   - `reasoning`: Brief step-by-step CoT reasoning explaining the product/abbreviation.
-   - `franchise`: Official Brand, Manufacturer, or IP Franchise Name (e.g., '呪術廻戦', 'Re:ゼロから始める異世界生活', 'Sony', '任天堂', 'ハイキュー!!', 'Pokemon').
-   - `character`: Model Name, Specific Product Name, Character, or Sub-line (e.g., '五条悟', 'エミリア', 'レム', 'WH-1000XM5', 'Switch 2', 'ビスカリア', '影山飛雄', 'リザードン').
-   - `item_type`: Product Category in standard Japanese/Chinese (e.g., ヘッドホン, バドミントンラケット, ミラーレス一眼カメラ, スニーカー, 缶バッジ, フィギュア, トレカ).
-   - `year_or_edition`: Generation, version, or year if it is critical for distinguishing the product (e.g., Mark II, Gen 2, 2024).
-
-3. **Search Query Construction**:
-   - `keyword_jp` / `jp_keyword`: Core perfected official Japanese product identifier (e.g., '呪術廻戦', 'WIND BREAKER', 'Re:ゼロから始める異世界生活', 'Switch 2', 'Sony WH-1000XM5', 'ビスカリア', '卓球ラケット').
-   - `keyword_zh` / `zh_keyword`: Core perfected official Traditional Chinese product identifier (e.g., '咒術迴戰', '防風少年', 'Re:從零開始的異世界生活', 'Switch 2', 'Sony WH-1000XM5', '蝴蝶王', '桌球拍').
-   - Keep global brand names (e.g., Sony, Yonex, Canon, Apple, Nike, Switch) in standard Latin form.
-
-4. **Price Extraction & Estimation (`fb_price_twd` & `estimated_min_usd`)**:
-   - `fb_price_twd`: Extract the target item's selling price as an integer in TWD (e.g., '1500', '$1500', '1500元', 'NT$1500' -> 1500). If no price is mentioned or it is purely an image/inquiry without price, set to null.
-   - `estimated_min_usd`: 根據你對該商品的知識，預估該『主商品（排除空盒與廉價配件）』在二手市場的合理『最低』美金價格，並填入 estimated_min_usd。
-
-5. **Relevance Flag (`is_anime_merch` / is_valid_goods)**:
-   - Always set `is_anime_merch: true` so a search comparison card is always produced for user browsing.
-
-6. **Automatic Autocorrect Engine (`perfected_keyword`)**:
-   - You MUST act as an automatic autocorrect engine for e-commerce search queries.
-   - In the `perfected_keyword` field, output the optimal, fully corrected, and completed standard search string.
-   - You MUST correct any typos, casing issues, abbreviations, or incomplete names (e.g., converting "switch" to "Nintendo Switch", "iphone" to "Apple iPhone 15", "airpods" to "Apple AirPods Pro 2", "ps5" to "PlayStation 5", "re0" to "Re:從零開始的異世界生活", "88d pro" to "Yonex ASTROX 88D PRO").
-   - Always provide this perfected, standard product name in `perfected_keyword`.
+### Images
+- If an image is provided, inspect logos, packaging text, labels, model numbers, barcodes, and physical form to identify the main product; ignore background and people.
 """.strip()
-
-
-def fast_regex_parse(text: str) -> Optional[ParsedItem]:
-    """
-    Ultra-low latency (< 0.1ms) regex entity extraction for standard clean product queries.
-    Bypasses LLM overhead for direct queries in CUSTOM_KEYWORDS (e.g., '蝴蝶王', '小香', 're:0', 'botw')
-    or pure ASCII/Latin brand model codes (e.g., 'Switch 2', 'PS5', 'Nikon Zfc', 'WH-1000XM5').
-    Any non-ASCII/Chinese/Kanji text NOT in CUSTOM_KEYWORDS is passed to Gemini for translation.
-    """
-    if not text:
-        return None
-
-    clean = text.strip().lower()
-    if not clean or len(clean) > 40:
-        return None
-
-    # 1. Check Custom Colloquialism & Shorthand Dictionary match first (case-insensitive)
-    for custom_k, custom_v in CUSTOM_KEYWORDS.items():
-        if clean == custom_k.lower():
-            return ParsedItem(
-                franchise=custom_v,
-                character="",
-                item_type="商品",
-                keyword_jp=custom_v,
-                keyword_zh=clean,
-                search_query_ja=custom_v,
-                fb_price_twd=None,
-                is_anime_merch=True,
-                perfected_keyword=clean,
-                suggested_term=clean,
-            )
-
-    # 2. Skip fast-path if text contains trading verbs, conditions, or conversational tokens
-    trading_and_chat_pattern = r"(?:^[\[【]?(?:售|出|買|賣|徵|求|換|問|推|換|出清)[\]】]?)|(?:推薦|請問|多少|好用|二手|九成新|成新|面交|郵寄|綁|私訊|放行|保固|正版|代理)"
-    if re.search(trading_and_chat_pattern, clean):
-        return None
-
-    # 3. Skip if contains sentence punctuation or newlines
-    if re.search(r"[,，。！？!?\n\r:：【】\[\]()（）/／]", clean):
-        return None
-
-    # 4. Only bypass LLM for Latin/ASCII brand & model identifiers that contain digits or multiple words (e.g. 'Switch 2', 'PS5', 'Sony WH-1000XM5')
-    # Single-word generic terms without digits (e.g. 'switch', 'iphone', 'shoes', 'camera') must go to Gemini for entity completion and perfected_keyword.
-    is_pure_latin_ascii = bool(re.match(r"^[A-Za-z0-9\s\-+._]+$", clean))
-    if is_pure_latin_ascii:
-        has_digits_or_multiple_tokens = bool(re.search(r"\d", clean) or " " in clean)
-        if has_digits_or_multiple_tokens:
-            norm_kw = normalize_search_keyword(clean)
-            if len(norm_kw) >= 2:
-                return ParsedItem(
-                    franchise=norm_kw,
-                    character="",
-                    item_type="商品",
-                    keyword_jp=norm_kw,
-                    keyword_zh=norm_kw,
-                    search_query_ja=norm_kw,
-                    fb_price_twd=None,
-                    is_anime_merch=True,
-                    perfected_keyword=norm_kw,
-                    suggested_term=norm_kw,
-                )
-
-    return None
 
 
 async def parse_fb_post(
@@ -481,20 +351,12 @@ async def parse_fb_post(
     vision_prompt: Optional[str] = None,
 ) -> ParsedItem:
     """
-    Extract structured retail item entities from text or images.
-    Attempts ultra-fast Regex parsing first to bypass LLM latency (< 0.1ms).
-    Falls back to Gemini Flash multimodal extraction for complex/multimodal posts.
+    Extract structured retail item entities (keywords + category) from text or images.
+    Every input goes through Gemini so abbreviations and slang are expanded.
     """
     cleaned_text = post_text.strip().lower() if post_text else ""
     if not cleaned_text and image_data is None:
         raise IrrelevantPostError("Post text and image data are both empty.")
-
-    # --- Fast-Path Regex Parsing (Bypass LLM latency for standard queries) ---
-    if image_data is None and cleaned_text:
-        fast_result = fast_regex_parse(cleaned_text)
-        if fast_result is not None:
-            logger.info(f"⚡ [Regex Fast-Path] Bypassed LLM for query: '{cleaned_text}' -> '{fast_result.search_query_ja}'")
-            return fast_result
 
     gemini_key = api_key or settings.gemini_api_key or os.getenv("GEMINI_API_KEY")
     if not gemini_key:
@@ -597,7 +459,8 @@ async def parse_fb_post(
                     logger.info(
                         f"Successfully parsed input with model '{model_name}'. Brand/Franchise: '{parsed_result.franchise}', "
                         f"Model/Character: '{parsed_result.character}', JP Query: '{parsed_result.keyword_jp}', "
-                        f"ZH Query: '{parsed_result.keyword_zh}', Price: {parsed_result.fb_price_twd} TWD, "
+                        f"ZH Query: '{parsed_result.keyword_zh}', Category: {parsed_result.category.value}, "
+                        f"Price: {parsed_result.fb_price_twd} TWD, "
                         f"Est Min USD: {parsed_result.estimated_min_usd}"
                     )
                     return parsed_result

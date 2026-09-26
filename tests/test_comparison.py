@@ -12,7 +12,7 @@ from services.pricing import convert_to_twd
 from tests.fakes import FakeAdapter, FakeParser, failed, fake_platforms, found
 
 FIXED_NOW = datetime(2026, 10, 1, 12, 0, tzinfo=timezone.utc)
-LINK_ONLY_PLATFORMS = ("yahoo_jp", "yahoo_tw", "taobao")
+LINK_ONLY_PLATFORMS = ("yahoo_jp", "ruten", "taobao")
 
 
 def fixed_clock():
@@ -33,6 +33,8 @@ def switch_item(**overrides):
         search_query_ja="Nintendo Switch",
         perfected_keyword="Nintendo Switch OLED",
         fb_price_twd=8500,
+        # 含 Mercari、日本樂天、蝦皮（目前有轉接器的平台）的類別
+        category="動漫周邊/玩具",
     )
     fields.update(overrides)
     return ParsedItem(**fields)
@@ -75,7 +77,7 @@ async def test_success_returns_prices_per_platform_and_keywords():
     assert result.fetched_at == FIXED_NOW
     assert result.from_cache is False
 
-    assert list(result.platforms) == ["mercari", "yahoo_jp", "rakuten", "shopee", "yahoo_tw", "taobao"]
+    assert list(result.platforms) == ["mercari", "yahoo_jp", "rakuten", "shopee", "ruten", "taobao"]
     assert result.platforms["mercari"].status is PlatformStatus.OK
     assert result.platforms["mercari"].min_price_twd == jpy_to_twd(30000.0)
     assert result.platforms["rakuten"].min_price_twd == jpy_to_twd(37000.0)
@@ -93,7 +95,7 @@ async def test_every_platform_carries_its_search_link(no_affiliates):
     assert result.platforms["rakuten"].search_url.startswith("https://buyee.jp/rakuten/shopping/search/")
     assert result.platforms["yahoo_jp"].search_url == "https://buyee.jp/item/search/query/NINTENDO%20SWITCH"
     assert result.platforms["shopee"].search_url == "https://shopee.tw/search?keyword=NINTENDO%20SWITCH%20OLED"
-    assert result.platforms["yahoo_tw"].search_url.startswith("https://tw.buy.yahoo.com/search/product?p=")
+    assert result.platforms["ruten"].search_url == "https://www.ruten.com.tw/find/?q=NINTENDO%20SWITCH%20OLED"
 
 
 @pytest.mark.anyio
@@ -262,3 +264,65 @@ async def test_image_results_are_not_cached():
     cache = TTLCache()
     await run(image=b"img", cache=cache)
     assert len(cache) == 0
+
+
+# --- 類別 → 6 平台（對照表內容須與規格書 User Stories 8–13 一致）---
+
+EXPECTED_PLATFORMS_BY_CATEGORY = {
+    "3C 家電": ["pchome", "momo", "shopee", "yahoo_tw", "ruten", "rakuten"],
+    "美妝保養": ["momo", "shopee", "pchome", "yahoo_tw", "rakuten", "taobao"],
+    "服飾鞋包": ["shopee", "momo", "taobao", "ruten", "mercari", "rakuten"],
+    "動漫周邊/玩具": ["mercari", "yahoo_jp", "rakuten", "shopee", "ruten", "taobao"],
+    "運動戶外": ["momo", "pchome", "shopee", "yahoo_tw", "rakuten", "taobao"],
+    "其他": ["shopee", "momo", "pchome", "yahoo_tw", "ruten", "taobao"],
+}
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("category, expected", EXPECTED_PLATFORMS_BY_CATEGORY.items())
+async def test_each_category_selects_its_six_platforms(category, expected):
+    result = await run(text="商品", parser=FakeParser(switch_item(category=category)))
+
+    assert list(result.platforms) == expected
+    assert result.category.value == category
+
+
+@pytest.mark.anyio
+async def test_undetermined_category_uses_default_platforms():
+    result = await run(text="商品", parser=FakeParser(ParsedItem(keyword_zh="某商品")))
+
+    assert result.category.value == "其他"
+    assert list(result.platforms) == EXPECTED_PLATFORMS_BY_CATEGORY["其他"]
+
+
+@pytest.mark.anyio
+async def test_irrelevant_input_uses_default_platforms():
+    result = await run(text="今天天氣好", parser=FakeParser(error=IrrelevantPostError("not shopping")))
+
+    assert list(result.platforms) == EXPECTED_PLATFORMS_BY_CATEGORY["其他"]
+
+
+@pytest.mark.anyio
+async def test_platforms_outside_the_category_are_not_queried():
+    mercari, rakuten = FakeAdapter(found(30000.0)), FakeAdapter(found(37000.0))
+    platforms = fake_platforms(mercari=mercari, rakuten=rakuten)
+    result = await run(text="吹風機", parser=FakeParser(switch_item(category="美妝保養")), platforms=platforms)
+
+    assert "mercari" not in result.platforms
+    assert mercari.calls == []
+    assert rakuten.calls == ["Nintendo Switch"]
+
+
+@pytest.mark.anyio
+async def test_platforms_without_adapter_are_link_only_with_search_link(no_affiliates):
+    result = await run(text="ps5", parser=FakeParser(switch_item(category="3C 家電")))
+
+    for name in ("pchome", "momo", "yahoo_tw", "ruten"):
+        assert result.platforms[name].status is PlatformStatus.LINK_ONLY
+        assert result.platforms[name].min_price_twd is None
+    assert result.platforms["pchome"].search_url == "https://24h.pchome.com.tw/search/?q=NINTENDO%20SWITCH%20OLED"
+    assert result.platforms["momo"].search_url == (
+        "https://www.momoshop.com.tw/search/searchShop.jsp?keyword=NINTENDO%20SWITCH%20OLED"
+    )
+    assert result.platforms["ruten"].search_url == "https://www.ruten.com.tw/find/?q=NINTENDO%20SWITCH%20OLED"
+    assert result.platforms["yahoo_tw"].search_url == "https://tw.buy.yahoo.com/search/product?p=NINTENDO%20SWITCH%20OLED"

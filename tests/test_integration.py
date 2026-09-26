@@ -81,6 +81,7 @@ def test_end_to_end_pipeline_success(
         search_query_ja="ハイキュー 影山 もちもちマスコット 2020",
         fb_price_twd=1500,
         is_anime_merch=True,
+        category="動漫周邊/玩具",
     ))
 
     mercari = found(1200.0, 1500.0, 1800.0, thumbnail='https://static.mercdn.net/item/detail/orig/photos/m1.jpg')
@@ -135,6 +136,7 @@ def test_end_to_end_pipeline_with_affiliate_base_url(
         search_query_ja="Sony WH-1000XM5 ヘッドホン",
         fb_price_twd=8000,
         is_anime_merch=True,
+        category="3C 家電",
     ))
 
     mercari = found(28000.0, 32000.0, thumbnail='https://static.mercdn.net/item/detail/orig/photos/sony.jpg')
@@ -177,55 +179,35 @@ def test_end_to_end_pipeline_with_affiliate_base_url(
         assert flex_dict["type"] == "carousel"
         assert len(flex_dict["contents"]) == 2
 
-        # Card 1 (Japan Focus)
+        # 3C 家電：日本卡只有日本樂天；綜合卡為 PChome、momo、蝦皮、Yahoo 購物、露天（依對照表順序）
         card_japan = flex_dict["contents"][0]
         assert "hero" not in card_japan
         japan_buttons = [c for c in card_japan["footer"]["contents"] if c.get("type") == "button"]
-        assert len(japan_buttons) == 3
-
-        # Buyee Mercari Button
-        buyee_uri = japan_buttons[0]["action"]["uri"]
-        assert buyee_uri.startswith("https://affiliate.example.com/redirect?t=")
-        assert "https%3A%2F%2Fbuyee.jp%2Fmercari%2Fsearch" in buyee_uri
-        assert "af%3Daff_123" in buyee_uri
-        assert japan_buttons[0]["action"]["label"].startswith("Mercari (約 NT$") or japan_buttons[0]["action"]["label"] in ("前往 Mercari (直購)", "Mercari (點擊查看)")
-
-        # Buyee Yahoo Auctions Button
-        yahoo_uri = japan_buttons[1]["action"]["uri"]
-        assert yahoo_uri.startswith("https://affiliate.example.com/redirect?t=")
-        assert "https%3A%2F%2Fbuyee.jp%2Fitem%2Fsearch%2Fquery" in yahoo_uri
-        assert "af%3Daff_123" in yahoo_uri
-        assert japan_buttons[1]["action"]["label"] in ("前往 日本雅虎 (競標)", "日本雅虎 (點擊查看)")
+        assert len(japan_buttons) == 1
 
         # Buyee Rakuten Button
-        rakuten_uri = japan_buttons[2]["action"]["uri"]
+        rakuten_uri = japan_buttons[0]["action"]["uri"]
         assert rakuten_uri.startswith("https://affiliate.example.com/redirect?t=")
         assert "https%3A%2F%2Fbuyee.jp%2Frakuten%2Fshopping%2Fsearch%2Fcategory%2F0%3Fquery%3D" in rakuten_uri
         assert "af%3Daff_123" in rakuten_uri
-        assert japan_buttons[2]["action"]["label"] in ("前往 日本樂天 (全新品)", "日本樂天 (點擊查看)")
+        assert japan_buttons[0]["action"]["label"] == "日本樂天 (點擊查看)"
 
-        # Card 2 (Greater China Focus)
         card_china = flex_dict["contents"][1]
         assert "hero" not in card_china
         china_buttons = [c for c in card_china["footer"]["contents"] if c.get("type") == "button"]
-        assert len(china_buttons) == 3
+        assert [b["action"]["label"] for b in china_buttons] == [
+            "PChome (點擊查看)", "momo 購物 (點擊查看)", "台灣蝦皮 (點擊查看)", "台灣 Yahoo (點擊查看)", "露天拍賣 (點擊查看)",
+        ]
 
         # Shopee Button (with dynamic affiliate tracking redirect)
-        shopee_uri = china_buttons[0]["action"]["uri"]
+        shopee_uri = china_buttons[2]["action"]["uri"]
         assert shopee_uri.startswith("https://affiliate.shopee.example.com/click?t=")
         assert "https%3A%2F%2Fshopee.tw%2Fsearch%3Fkeyword%3D" in shopee_uri
-        assert china_buttons[0]["action"]["label"] in ("前往 台灣蝦皮", "台灣蝦皮 (點擊查看)")
 
         # Yahoo Taiwan Button (with dynamic affiliate tracking redirect)
-        yahoo_tw_uri = china_buttons[1]["action"]["uri"]
+        yahoo_tw_uri = china_buttons[3]["action"]["uri"]
         assert yahoo_tw_uri.startswith("https://affiliate.yahoo-tw.example.com/click?t=")
         assert "https%3A%2F%2Ftw.buy.yahoo.com%2Fsearch%2Fproduct%3Fp%3D" in yahoo_tw_uri
-        assert china_buttons[1]["action"]["label"] in ("前往 台灣 Yahoo", "台灣 Yahoo (點擊查看)")
-
-        # Taobao Button (bare affiliate URL without ?t= deep-link)
-        taobao_uri = china_buttons[2]["action"]["uri"]
-        assert taobao_uri == "https://affiliate.taobao.example.com/click"
-        assert china_buttons[2]["action"]["label"] in ("前往 淘寶 (請手動搜尋)", "淘寶 (點擊查看)")
 
 
 @patch("main.AsyncMessagingApiBlob")
@@ -307,6 +289,7 @@ def test_end_to_end_vague_input_flex_fallback(
         "keyword_zh": "底片相機",
         "fb_price_twd": None,
         "is_anime_merch": True,
+        "category": "3C 家電",
     })
 
     # 真實 AI 解析器（只換掉 Gemini client），平台換成不連網的假轉接器
@@ -340,10 +323,11 @@ def test_end_to_end_vague_input_flex_fallback(
         flex_dict = sent_msg.contents.to_dict()
         assert flex_dict["type"] == "carousel"
         assert len(flex_dict["contents"]) == 2
+        # AI 判斷為 3C 家電 → 日本樂天在日本卡，其餘 5 個平台在綜合卡
         card_japan_btns = [c for c in flex_dict["contents"][0]["footer"]["contents"] if c.get("type") == "button"]
-        assert len(card_japan_btns) == 3
+        assert len(card_japan_btns) == 1
         card_china_btns = [c for c in flex_dict["contents"][1]["footer"]["contents"] if c.get("type") == "button"]
-        assert len(card_china_btns) == 3
+        assert len(card_china_btns) == 5
 
 
 

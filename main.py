@@ -131,11 +131,11 @@ from contextlib import asynccontextmanager
 # Predefined Hot Keywords for Background Cache Pre-warming
 PREWARM_KEYWORDS = [
     "Switch 2",
-    "薩爾達傳說 王國之淚",
-    "咒術迴戰 五條 手辦",
-    "Viscaria 桌球拍",
-    "CCD 數位相機",
-    "底片相機",
+    "PS5",
+    "AirPods Pro",
+    "Dyson 吹風機",
+    "AJ1",
+    "小棕瓶",
 ]
 
 
@@ -147,9 +147,9 @@ async def prewarm_search_cache() -> None:
     logger.info("🔥 [Cache Pre-warm] Starting background cache pre-warming for hot keywords...")
     for kw in PREWARM_KEYWORDS:
         try:
-            # 只快取完整比價結果：啟動時抓價失敗不應讓使用者一小時內都拿到無價格的卡片
+            # 只快取至少有一個平台查到價格的結果：啟動時抓價失敗不應讓使用者一小時內都拿到無價格的卡片
             result = await compare_prices(text=kw, cache=TTLCache())
-            if not result.is_full:
+            if not result.has_price:
                 continue
             search_cache.set(comparison_cache_key(kw), result, ttl=3600.0)
             logger.info(f"🔥 [Cache Pre-warm] Successfully pre-warmed cache for: '{kw}'")

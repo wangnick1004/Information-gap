@@ -244,9 +244,12 @@ async def test_search_safely_enforces_timeout_and_catches_errors():
 
 # --- 平台集合 ---
 
-def test_platform_collection_covers_existing_six_platforms():
+def test_platform_collection_covers_every_platform_in_category_table():
+    from services.categories import CATEGORY_PLATFORMS
+
     platforms = build_platforms(evaluation_mode=False)
-    assert list(platforms) == ["mercari", "yahoo_jp", "rakuten", "shopee", "yahoo_tw", "taobao"]
+    assert set(platforms) == {name for names in CATEGORY_PLATFORMS.values() for name in names}
+    assert all(len(names) == len(set(names)) == 6 for names in CATEGORY_PLATFORMS.values())
 
 
 def test_rapidapi_adapters_are_disabled_outside_evaluation_mode():

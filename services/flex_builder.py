@@ -1,9 +1,8 @@
 import logging
 import re
-from typing import Any, Dict, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
-from price_fetcher import inject_shopee_button_to_flex
-from services.comparison import ComparisonResult
+from services.comparison import ComparisonResult, PlatformQuote
 from services.parser import ParsedAnimeItem, ParsedItem
 from services.pricing import PricingResult
 from services.scraper import (
@@ -37,6 +36,24 @@ RAKUTEN_RED_COLOR = "#BF0000"         # Rakuten Japan signature crimson red
 SHOPEE_ORANGE_COLOR = "#EE4D2D"      # Shopee official vibrant orange
 TAOBAO_RED_ORANGE_COLOR = "#FF5000"  # Taobao official warm red-orange
 YAHOO_TW_PURPLE_COLOR = "#6001D2"     # Yahoo! Taiwan Shopping signature purple
+PCHOME_RED_COLOR = "#E60012"
+MOMO_PINK_COLOR = "#D6006F"
+RUTEN_BLUE_COLOR = "#0068B7"
+
+# 比價結果卡片上各平台的顯示名稱與按鈕顏色
+PLATFORM_DISPLAY: Dict[str, Tuple[str, str]] = {
+    "mercari": ("Mercari", BUYEE_GREEN_COLOR),
+    "yahoo_jp": ("日本雅虎", YAHOO_AUCTIONS_COLOR),
+    "rakuten": ("日本樂天", RAKUTEN_RED_COLOR),
+    "shopee": ("台灣蝦皮", SHOPEE_ORANGE_COLOR),
+    "yahoo_tw": ("台灣 Yahoo", YAHOO_TW_PURPLE_COLOR),
+    "taobao": ("淘寶", TAOBAO_RED_ORANGE_COLOR),
+    "pchome": ("PChome", PCHOME_RED_COLOR),
+    "momo": ("momo 購物", MOMO_PINK_COLOR),
+    "ruten": ("露天拍賣", RUTEN_BLUE_COLOR),
+}
+# 放在第一張卡（日本精選平台）的平台；其餘放在第二張卡
+JAPANESE_PLATFORMS = frozenset({"mercari", "yahoo_jp", "rakuten"})
 
 
 def _override_urls(platform_urls: Optional[Dict[str, str]], **urls: str) -> Tuple[str, ...]:
@@ -354,7 +371,7 @@ def build_keyword_flex_message(
                 ),
                 {
                     "type": "text",
-                    "text": "💡 支援台灣蝦皮、淘寶與台灣 Yahoo 比價，快速比對現貨價！",
+                    "text": "💡 點擊下方按鈕，前往各平台查看現貨價！",
                     "size": "xxs",
                     "color": "#999999",
                     "wrap": True,
@@ -854,7 +871,7 @@ def build_price_comparison_flex(
                 },
                 {
                     "type": "text",
-                    "text": "💡 支援台灣蝦皮、淘寶與台灣 Yahoo 比價，快速比對現貨價！",
+                    "text": "💡 點擊下方按鈕，前往各平台查看現貨價！",
                     "size": "xs",
                     "color": "#777777",
                     "wrap": True,
@@ -928,8 +945,8 @@ def build_comparison_flex(result: ComparisonResult) -> Tuple[Dict[str, Any], str
     將比價結果轉成 LINE Flex 卡片，回傳 (flex_dict, alt_text)。
     只負責呈現：平台順序與價格皆來自比價結果，分潤設定只影響連結。
     """
+    # 平台按鈕（名稱、價格、連結）在最後依比價結果重建，這裡只帶共用設定
     common = dict(
-        **{f"{name}_min_price": quote.min_price_twd for name, quote in result.platforms.items()},
         enable_dynamic_buttons=True,
         platform_urls={name: quote.search_url for name, quote in result.platforms.items()},
     )
@@ -956,6 +973,32 @@ def build_comparison_flex(result: ComparisonResult) -> Tuple[Dict[str, Any], str
         )
         alt_text = "比價成功，來去撈便宜～"
 
-    shopee = result.platforms.get("shopee")
-    flex_dict = inject_shopee_button_to_flex(flex_dict, shopee.min_price_twd if shopee else None)
+    # 按鈕只呈現比價結果中的平台（依類別選出的 6 個），沒有平台的卡片不顯示
+    japanese = [(name, q) for name, q in result.platforms.items() if name in JAPANESE_PLATFORMS]
+    others = [(name, q) for name, q in result.platforms.items() if name not in JAPANESE_PLATFORMS]
+    flex_dict["contents"] = [
+        _with_platform_buttons(card, [_platform_button(name, quote) for name, quote in group])
+        for card, group in zip(flex_dict["contents"], (japanese, others))
+        if group
+    ]
     return flex_dict, alt_text
+
+
+def _platform_button(name: str, quote: PlatformQuote) -> Dict[str, Any]:
+    display_name, color = PLATFORM_DISPLAY.get(name, (name, "#555555"))
+    label = format_button_label(display_name, quote.min_price_twd, f"前往 {display_name}", enable_dynamic=True)
+    return {
+        "type": "button",
+        "style": "primary",
+        "color": color,
+        "height": "sm",
+        "text": label,
+        "action": {"type": "uri", "label": label, "uri": quote.search_url},
+    }
+
+
+def _with_platform_buttons(card: Dict[str, Any], buttons: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """以指定按鈕取代卡片頁尾原本寫死的平台按鈕，保留頁尾其他內容。"""
+    footer = card["footer"]["contents"]
+    card["footer"]["contents"] = buttons + [c for c in footer if c.get("type") != "button"]
+    return card

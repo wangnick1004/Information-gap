@@ -17,6 +17,9 @@ BUYEE_RAKUTEN_SEARCH_BASE_URL = "https://buyee.jp/rakuten/shopping/search/catego
 SHOPEE_SEARCH_BASE_URL = "https://shopee.tw/search"
 TAOBAO_SEARCH_BASE_URL = "https://world.taobao.com/search/search.htm"
 YAHOO_TW_SEARCH_BASE_URL = "https://tw.buy.yahoo.com/search/product"
+PCHOME_SEARCH_BASE_URL = "https://24h.pchome.com.tw/search/"
+MOMO_SEARCH_BASE_URL = "https://www.momoshop.com.tw/search/searchShop.jsp"
+RUTEN_SEARCH_BASE_URL = "https://www.ruten.com.tw/find/"
 
 
 def build_buyee_yahoo_search_url(
@@ -150,6 +153,25 @@ def build_yahoo_tw_search_url(
         return f"{base_clean}{separator}t={encoded_target}"
 
     return base_search_url
+
+
+def _query_search_url(base_url: str, param: str, keyword: str) -> str:
+    return f"{base_url}?{param}={urllib.parse.quote(normalize_search_keyword(keyword))}"
+
+
+def build_pchome_search_url(keyword_zh: str) -> str:
+    """PChome 24h 購物搜尋連結（尚無分潤參數）。"""
+    return _query_search_url(PCHOME_SEARCH_BASE_URL, "q", keyword_zh)
+
+
+def build_momo_search_url(keyword_zh: str) -> str:
+    """momo 購物網搜尋連結（尚無分潤參數）。"""
+    return _query_search_url(MOMO_SEARCH_BASE_URL, "keyword", keyword_zh)
+
+
+def build_ruten_search_url(keyword_zh: str) -> str:
+    """露天拍賣搜尋連結（尚無分潤參數）。"""
+    return _query_search_url(RUTEN_SEARCH_BASE_URL, "q", keyword_zh)
 
 
 def append_affiliate_id(

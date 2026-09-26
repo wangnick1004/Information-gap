@@ -61,8 +61,8 @@ async def test_prewarm_search_cache():
     from tests.fakes import FakeParser, fake_platforms, found, pipeline_with
 
     search_cache.clear()
-    parser = FakeParser(ParsedItem(keyword_zh="Switch 2", keyword_jp="Switch 2"))
-    platforms = fake_platforms(mercari=found(30000.0, 35000.0, 40000.0))
+    parser = FakeParser(ParsedItem(keyword_zh="Switch 2", keyword_jp="Switch 2", category="3C 家電"))
+    platforms = fake_platforms(shopee=found(15900.0, currency="TWD"))
 
     with patch("main.compare_prices", pipeline_with(parser, platforms)):
         await prewarm_search_cache()
@@ -84,9 +84,9 @@ async def test_prewarm_does_not_cache_failed_comparisons():
     from tests.fakes import FakeParser, failed, fake_platforms, pipeline_with
 
     search_cache.clear()
-    platforms = fake_platforms(mercari=failed(FetchStatus.TIMEOUT))
+    platforms = fake_platforms(shopee=failed(FetchStatus.TIMEOUT))
 
-    with patch("main.compare_prices", pipeline_with(FakeParser(ParsedItem(keyword_zh="x")), platforms)):
+    with patch("main.compare_prices", pipeline_with(FakeParser(ParsedItem(keyword_zh="x", category="3C 家電")), platforms)):
         await prewarm_search_cache()
 
     assert len(search_cache) == 0

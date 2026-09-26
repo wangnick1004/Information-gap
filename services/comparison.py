@@ -2,7 +2,8 @@
 比價流程入口：輸入文字或圖片，輸出不含 LINE 格式的結構化比價結果。
 
 AI 解析器、平台集合、時鐘與快取皆可由呼叫端替換（測試與評測共用同一入口）。
-平台只透過平台集合（services.platforms）的轉接器查詢。
+AI 判斷商品類別後，依類別對照表（services.categories）從平台集合選出 6 個平台，
+只透過這些平台的轉接器查詢。
 """
 
 import asyncio
@@ -16,7 +17,8 @@ from enum import Enum
 from typing import Awaitable, Callable, Dict, Mapping, Optional, Tuple
 
 from services.cache import TTLCache, search_cache
-from services.parser import IrrelevantPostError, ParsedItem, parse_fb_post
+from services.categories import Category, platforms_for
+from services.parser import DEFAULT_VISION_PROMPT, IrrelevantPostError, ParsedItem, parse_fb_post
 from services.platforms import FetchResult, FetchStatus, Platform, build_platforms, search_safely
 from services.pricing import (
     PricingResult,
@@ -32,15 +34,8 @@ PLATFORM_TIMEOUT_SECONDS = 8.0
 # 舊版卡片的 Mercari 統計只採計前 15 筆
 LEGACY_CARD_SAMPLE_SIZE = 15
 
-# Gemini Vision Model Prompt for Image Messages (Strict E-commerce Extraction Rule)
-GEMINI_VISION_PROMPT = (
-    "你現在是一位頂級的跨國網購商品鑑定專家。請分析這張圖片，並精準辨識出圖片中的『主體商品』。\n"
-    "執行步驟：\n"
-    "1. 放大檢視圖片中的任何文字、Logo、標籤或型號（啟動 OCR）。\n"
-    "2. 忽略背景與人物，只專注於商品本身。\n"
-    "3. 如果是動漫公仔，請找出『角色名稱＋作品名稱』。如果是 3C、相機或運動用品，請找出『品牌＋精確型號』。\n"
-    "4. 【絕對限制】：請『只』輸出最精確的商品搜尋關鍵字（例如：'Fujifilm X100V 黑色' 或 '薩爾達傳說 王國之淚 林克 Amiibo'），絕對不要輸出完整的句子或描述性廢話。"
-)
+# 圖片輸入使用的 Gemini 提示詞（通用商品辨識）
+GEMINI_VISION_PROMPT = DEFAULT_VISION_PROMPT
 
 
 class PlatformStatus(str, Enum):
@@ -68,6 +63,7 @@ class ComparisonResult:
     keyword_jp: str
     platforms: Dict[str, PlatformQuote]
     fetched_at: datetime
+    category: Category = Category.OTHER
     from_cache: bool = False
     min_price_twd: Optional[int] = None
     avg_price_twd: Optional[int] = None
@@ -77,6 +73,11 @@ class ComparisonResult:
     # 卡片改版後應移除
     pricing: Optional[PricingResult] = None
     scraper_result: Optional[ScrapingResult] = None
+
+    @property
+    def has_price(self) -> bool:
+        """至少一個平台查到真實價格。"""
+        return any(quote.status is PlatformStatus.OK for quote in self.platforms.values())
 
     @property
     def is_full(self) -> bool:
@@ -111,6 +112,7 @@ async def compare_prices(
 ) -> ComparisonResult:
     """
     比價流程入口。text 與 image 必須恰好給一個。
+    platforms 為候選平台池（預設為 build_platforms() 的全部平台），實際查詢哪 6 個由類別決定。
 
     AI 服務錯誤（GeminiServerError / GeminiRateLimitError / GeminiAPIError）會原樣拋出，
     由呼叫端決定如何回覆；平台失敗與「與購物無關」則反映在各平台狀態中。
@@ -155,15 +157,20 @@ async def _run_comparison(
         logger.warning(f"Input judged irrelevant to shopping, replying with search links: {exc}")
 
     keyword_zh, keyword_jp = _keywords(text, parsed_item)
-    logger.info(f"⚡ [Search Keywords] zh: '{keyword_zh}' / jp: '{keyword_jp}'")
+    category = parsed_item.category if parsed_item else Category.OTHER
+    selected = {name: platforms[name] for name in platforms_for(category) if name in platforms}
+    logger.info(
+        f"⚡ [Search Keywords] zh: '{keyword_zh}' / jp: '{keyword_jp}' / "
+        f"category: {category.value} -> {', '.join(selected)}"
+    )
     keywords = {"zh": keyword_zh, "ja": keyword_jp}
 
-    fetched = await _search_platforms(platforms, keywords)
+    fetched = await _search_platforms(selected, keywords)
 
     estimated_min_usd = parsed_item.estimated_min_usd if parsed_item else None
     quotes = {
         name: _quote(platform, fetched.get(name), keywords[platform.keyword_lang], estimated_min_usd)
-        for name, platform in platforms.items()
+        for name, platform in selected.items()
     }
 
     result = ComparisonResult(
@@ -173,6 +180,7 @@ async def _run_comparison(
         keyword_jp=keyword_jp,
         platforms=quotes,
         fetched_at=clock(),
+        category=category,
         parsed_item=parsed_item,
     )
     mercari = fetched.get("mercari")

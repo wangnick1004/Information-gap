@@ -288,7 +288,7 @@ async def test_rakuten_price_retained_on_scraper_failure():
         keyword_jp="ビスカリア",
         search_query_ja="ビスカリア",
         perfected_keyword="Butterfly Viscaria",
-        is_acg_or_toy=True,
+        category="運動戶外",
     )
 
     from services.platforms import FetchStatus
@@ -296,7 +296,7 @@ async def test_rakuten_price_retained_on_scraper_failure():
 
     rakuten = FakeAdapter(found(3837.0, currency="TWD"))  # Rakuten succeeded on the first concurrent fetch!
     platforms = fake_platforms(
-        # Buyee Mercari 逾時
+        # 運動戶外不含 Mercari；Mercari 逾時不應影響樂天
         mercari=failed(FetchStatus.TIMEOUT),
         rakuten=rakuten,
     )

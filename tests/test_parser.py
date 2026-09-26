@@ -561,28 +561,6 @@ async def test_parse_fb_post_missing_api_key():
 
 
 @pytest.mark.anyio
-async def test_parse_fb_post_fast_regex_bypass():
-    """Test that standard queries bypass LLM completely via fast_regex_parse in < 0.1ms."""
-    from services.parser import fast_regex_parse
-
-    # 1. Clean query
-    res1 = fast_regex_parse("Switch 2")
-    assert res1 is not None
-    assert res1.search_query_ja == "SWITCH 2"
-    assert res1.fb_price_twd is None
-
-    # 2. Product query
-    res2 = fast_regex_parse("PS5")
-    assert res2 is not None
-    assert res2.search_query_ja == "PS5"
-
-    # 3. Direct parse_fb_post bypass without API key
-    res3 = await parse_fb_post("CCD 相機", api_key=None)
-    assert res3.search_query_ja == "CCD カメラ"
-    assert res3.keyword_jp == "CCD カメラ"
-
-
-@pytest.mark.anyio
 async def test_parse_fb_post_api_failure():
     """Test that non-retryable upstream Gemini API failures raise GeminiAPIError gracefully."""
     complex_post_text = "【出清】誠可議價，歡迎面交或郵寄。\n售 Yonex 88D 拍子 3000"
@@ -637,57 +615,8 @@ async def test_parse_fb_post_strict_core_keyword_simplicity():
 
 
 @pytest.mark.anyio
-async def test_custom_colloquialism_keywords():
-    """Test that Taiwanese colloquialisms map directly to official Japanese marketplace keywords."""
-    from services.parser import CUSTOM_KEYWORDS, fast_regex_parse
-
-    # 1. Direct dictionary matches
-    assert CUSTOM_KEYWORDS["蝴蝶王"] == "ビスカリア"
-    assert CUSTOM_KEYWORDS["金標"] == "ビスカリア ゴールデン"
-    assert CUSTOM_KEYWORDS["張繼科"] == "張継科"
-    assert CUSTOM_KEYWORDS["小香"] == "シャネル"
-
-    # 2. Fast-path parsing maps colloquial terms to official Japanese listing terms
-    res_butterfly = fast_regex_parse("蝴蝶王")
-    assert res_butterfly is not None
-    assert res_butterfly.keyword_jp == "ビスカリア"
-    assert res_butterfly.search_query_ja == "ビスカリア"
-    assert res_butterfly.keyword_zh == "蝴蝶王"
-
-    res_chanel = fast_regex_parse("小香")
-    assert res_chanel is not None
-    assert res_chanel.keyword_jp == "シャネル"
-    assert res_chanel.keyword_zh == "小香"
-
-    # 3. Direct parse_fb_post integration
-    res_direct = await parse_fb_post("蝴蝶王", api_key=None)
-    assert res_direct.keyword_jp == "ビスカリア"
-    assert res_direct.search_query_ja == "ビスカリア"
-
-
-@pytest.mark.anyio
 async def test_abbreviations_and_shorthand_expansion():
-    """Test that shorthand abbreviations like 're:0' and 'botw' expand to full official titles."""
-    from services.parser import CUSTOM_KEYWORDS, fast_regex_parse
-
-    # 1. Test re:0 mapping in dictionary and fast parse
-    assert "re:0" in CUSTOM_KEYWORDS
-    assert CUSTOM_KEYWORDS["re:0"] == "Re:ゼロから始める異世界生活"
-
-    res_re0 = fast_regex_parse("re:0")
-    assert res_re0 is not None
-    assert res_re0.keyword_jp == "Re:ゼロから始める異世界生活"
-    assert res_re0.search_query_ja == "Re:ゼロから始める異世界生活"
-
-    # 2. Test botw mapping in dictionary and fast parse
-    assert "botw" in CUSTOM_KEYWORDS
-    assert CUSTOM_KEYWORDS["botw"] == "ゼルダの伝説 ブレス オブ ザ ワイルド"
-
-    res_botw = fast_regex_parse("botw")
-    assert res_botw is not None
-    assert res_botw.keyword_jp == "ゼルダの伝説 ブレス オブ ザ ワイルド"
-
-    # 3. Test LLM expansion with prompt instruction
+    """Test that shorthand abbreviations like 're:0' expand to full official titles via Gemini."""
     with patch("services.parser.genai.Client") as mock_client_class:
         mock_client = MagicMock()
         mock_client_class.return_value = mock_client
@@ -748,24 +677,6 @@ async def test_few_shot_cot_schema_with_reasoning():
 @pytest.mark.anyio
 async def test_chinese_queries_must_translate_to_native_japanese():
     """Test that Chinese queries are not blindly echoed to jp_keyword, but translated to native Japanese."""
-    from services.parser import fast_regex_parse
-
-    # 1. Non-ASCII / Chinese queries NOT in custom dictionary return None from fast_regex_parse
-    # so they are forced into the LLM pipeline
-    assert fast_regex_parse("未知的中文商品名稱") is None
-
-    # 2. Anime titles in custom dictionary map directly to native Japanese
-    res_jujutsu = fast_regex_parse("咒術迴戰")
-    assert res_jujutsu is not None
-    assert res_jujutsu.keyword_jp == "呪術廻戦"
-    assert res_jujutsu.keyword_zh == "咒術迴戰"
-
-    res_wind = fast_regex_parse("防風少年")
-    assert res_wind is not None
-    assert res_wind.keyword_jp == "WIND BREAKER"
-    assert res_wind.keyword_zh == "防風少年"
-
-    # 3. LLM Translation for unmapped Chinese queries
     with patch("services.parser.genai.Client") as mock_client_class:
         mock_client = MagicMock()
         mock_client_class.return_value = mock_client
@@ -833,26 +744,6 @@ def test_parsed_item_perfected_keyword_schema():
     assert data["perfected_keyword"] == "Nintendo Switch OLED"
 
 
-def test_fast_regex_parse_generic_terms_do_not_bypass():
-    """Test that generic single-word terms without digits do not bypass LLM, ensuring suggested_term is generated."""
-    from services.parser import fast_regex_parse
-
-    # Single-word generic/broad terms should NOT bypass
-    assert fast_regex_parse("iphone") is None
-    assert fast_regex_parse("  IPHONE  ") is None
-    assert fast_regex_parse("camera") is None
-    assert fast_regex_parse("shoes") is None
-
-    # Model identifiers with digits or multiple tokens still bypass
-    res_switch = fast_regex_parse("Switch 2")
-    assert res_switch is not None
-    assert res_switch.search_query_ja == "SWITCH 2"
-
-    res_ps5 = fast_regex_parse("PS5")
-    assert res_ps5 is not None
-    assert res_ps5.search_query_ja == "PS5"
-
-
 def test_parsed_item_estimated_min_usd_schema():
     """Test that ParsedItem schema supports estimated_min_usd integer field."""
     from services.parser import ParsedItem
@@ -904,3 +795,85 @@ async def test_parse_fb_post_with_estimated_min_usd():
         assert result.fb_price_twd == 3500
 
 
+def _gemini_returning(payload):
+    """Patch Gemini client so every chat returns the given JSON payload; yields the mock chat."""
+    mock_response = MagicMock()
+    mock_response.text = json.dumps(payload)
+    patcher = patch("services.parser.genai.Client")
+    mock_client_class = patcher.start()
+    mock_chat = MagicMock()
+    mock_client_class.return_value.aio.chats.create.return_value = mock_chat
+    mock_chat.send_message = AsyncMock(return_value=mock_response)
+    return patcher, mock_client_class, mock_chat
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "user_input, payload, expected_name, expected_category",
+    [
+        (
+            "AJ1",
+            {"perfected_keyword": "Nike Air Jordan 1", "keyword_zh": "Nike Air Jordan 1",
+             "keyword_jp": "ナイキ エアジョーダン1", "category": "服飾鞋包"},
+            "Nike Air Jordan 1",
+            "服飾鞋包",
+        ),
+        (
+            "switch2",
+            {"perfected_keyword": "Nintendo Switch 2", "keyword_zh": "Nintendo Switch 2",
+             "keyword_jp": "Nintendo Switch 2", "category": "3C 家電"},
+            "Nintendo Switch 2",
+            "3C 家電",
+        ),
+        (
+            "PS5",
+            {"perfected_keyword": "Sony PlayStation 5", "keyword_zh": "PlayStation 5",
+             "keyword_jp": "PlayStation 5", "category": "3C 家電"},
+            "Sony PlayStation 5",
+            "3C 家電",
+        ),
+    ],
+)
+async def test_model_codes_and_abbreviations_are_expanded_by_gemini(
+    user_input, payload, expected_name, expected_category
+):
+    patcher, _, mock_chat = _gemini_returning(payload)
+    try:
+        result = await parse_fb_post(user_input, api_key="fake_key")
+    finally:
+        patcher.stop()
+
+    mock_chat.send_message.assert_awaited_once_with(message=user_input.lower())
+    assert result.perfected_keyword == expected_name
+    assert result.category.value == expected_category
+
+
+@pytest.mark.anyio
+async def test_no_input_bypasses_gemini(monkeypatch):
+    """Model codes like 'Switch 2' used to skip the LLM; now every input needs Gemini."""
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    with patch("services.parser.settings.gemini_api_key", None):
+        for text in ("Switch 2", "PS5", "蝴蝶王", "re:0"):
+            with pytest.raises(GeminiAPIError):
+                await parse_fb_post(text, api_key=None)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("raw_category", ["家具", "", None])
+async def test_undeterminable_category_becomes_other(raw_category):
+    payload = {"keyword_zh": "某商品", "keyword_jp": "ある商品"}
+    if raw_category is not None:
+        payload["category"] = raw_category
+    patcher, _, _ = _gemini_returning(payload)
+    try:
+        result = await parse_fb_post("某商品", api_key="fake_key")
+    finally:
+        patcher.stop()
+
+    assert result.category.value == "其他"
+
+
+def test_gemini_schema_limits_category_to_six_values():
+    schema = ParsedItem.model_json_schema()
+    category_schema = schema["$defs"][schema["properties"]["category"]["$ref"].split("/")[-1]]
+    assert set(category_schema["enum"]) == {"3C 家電", "美妝保養", "服飾鞋包", "動漫周邊/玩具", "運動戶外", "其他"}
