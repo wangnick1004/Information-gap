@@ -888,6 +888,14 @@ async def test_only_perfected_keyword_is_used_instead_of_the_raw_post():
     assert result.keyword_jp == "NINTENDO SWITCH 2"
 
 
+def test_prompt_keeps_the_generation_the_user_wrote():
+    """提示詞曾以 'airpods' -> 'AirPods Pro 2' 為例，導致模型把使用者寫的「pro 3」改成 Pro 2。"""
+    from services.parser import SYSTEM_INSTRUCTION
+
+    assert "KEEP WHAT THE USER WROTE" in SYSTEM_INSTRUCTION
+    assert "AirPods Pro 2" not in SYSTEM_INSTRUCTION
+
+
 def test_gemini_schema_limits_category_to_six_values():
     schema = ParsedItem.model_json_schema()
     category_schema = schema["$defs"][schema["properties"]["category"]["$ref"].split("/")[-1]]

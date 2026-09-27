@@ -264,8 +264,9 @@ def _record(case: EvaluationCase, result: Optional[ComparisonResult], elapsed: f
 def is_match(match_terms: Sequence[str], result: ComparisonResult) -> bool:
     """
     自動判定：AI 理解後的搜尋關鍵字（中文或日文）包含全部比對詞即為正確。
-    忽略大小寫、全半形、空白與標點（WH-1000XM5 = wh1000xm5）；比對詞後面緊接數字時不算吻合，
-    以區分世代與容量（Switch ≠ Switch 2、230 ≠ 2300ml）。顏色不列入比對詞即不計顏色。
+    忽略大小寫、全半形、空白與標點（WH-1000XM5 = wh1000xm5）；英數結尾的比對詞後面緊接數字時不算吻合，
+    以區分世代與容量（Switch ≠ Switch 2、230 ≠ 2300ml）；中文結尾的比對詞不受此限（青春露 = 青春露 230ml）。
+    顏色不列入比對詞即不計顏色。
     AI 故障或判定與購物無關時沒有 AI 理解結果，一律不正確。
     """
     if result.ai_unavailable or result.parsed_item is None:
@@ -275,12 +276,16 @@ def is_match(match_terms: Sequence[str], result: ComparisonResult) -> bool:
 
 
 def _contains_term(keyword: str, term: str) -> bool:
-    """term 出現在 keyword 中，且不是更長數字的一部分（Switch ≠ Switch 2、230 ≠ 2300ml）。"""
+    """
+    term 出現在 keyword 中，且不是更長型號或數字的一部分（Switch ≠ Switch 2、230 ≠ 2300ml）。
+    正規化會拿掉空白，「青春露 230ml」變成「青春露230ml」，所以只有英數結尾的 term 才檢查後面是否緊接數字。
+    """
     start = keyword.find(term)
+    checks_digit_after = bool(term) and term[-1].isascii() and term[-1].isalnum()
     while term and start != -1:
         end = start + len(term)
         digit_before = term[0].isdigit() and start > 0 and keyword[start - 1].isdigit()
-        digit_after = end < len(keyword) and keyword[end].isdigit()
+        digit_after = checks_digit_after and end < len(keyword) and keyword[end].isdigit()
         if not digit_before and not digit_after:
             return True
         start = keyword.find(term, start + 1)

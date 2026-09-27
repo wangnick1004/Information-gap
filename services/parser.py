@@ -321,7 +321,8 @@ Output: {"reasoning": "'排少' is the anime Haikyu!!, '影山' is Tobio Kageyam
 
 ### 1. Understanding the product
 - COLLOQUIAL TERMS: Translate Taiwanese nicknames and slang (e.g., '蝴蝶王', '小香', '小棕瓶', '水鬼') to the official product name.
-- ABBREVIATIONS & SHORTHAND: Expand abbreviations and model shorthand (e.g., 'AJ1' -> 'Nike Air Jordan 1', 'switch2' -> 'Nintendo Switch 2', 'ps5' -> 'PlayStation 5', 'airpods' -> 'Apple AirPods Pro 2', 're0' -> 'Re:從零開始的異世界生活'). Never search with the raw abbreviation when a full official name exists.
+- KEEP WHAT THE USER WROTE: model numbers, generations, and capacities the user explicitly wrote (e.g., 'pro 3', 'xm6', '230ml') must stay exactly as written, even if you do not recognize that product; newer products than your knowledge exist. Only fill in a generation when the user wrote none.
+- ABBREVIATIONS & SHORTHAND: Expand abbreviations and model shorthand (e.g., 'AJ1' -> 'Nike Air Jordan 1', 'switch2' -> 'Nintendo Switch 2', 'ps5' -> 'PlayStation 5', 're0' -> 'Re:從零開始的異世界生活'). Never search with the raw abbreviation when a full official name exists.
 - If the exact brand or model cannot be identified, NEVER fail and NEVER return empty keywords: deduce a general product keyword from the context (e.g., '藍牙耳機' / 'ワイヤレスイヤホン', '球鞋' / 'スニーカー', '桌球拍' / '卓球ラケット').
 
 ### 2. Keywords

@@ -227,6 +227,19 @@ def test_a_term_does_not_match_a_longer_number_in_the_keyword(tmp_path, term, ke
     assert record.auto_correct is False
 
 
+@pytest.mark.parametrize("term, keyword", [
+    ("青春露", "SK-II 青春露 230ml"),   # 中文品名後接容量：拿掉空白後緊接數字，仍算吻合
+    ("小棕瓶", "Estée Lauder 小棕瓶 50ml"),
+])
+def test_a_chinese_term_followed_by_a_size_is_a_match(tmp_path, term, keyword):
+    cases = load_cases(write_set(tmp_path, TEXT_CASE.replace("model: WH-1000XM5", f"model: {term}")))
+    parser = FakeParser(xm5_item(perfected_keyword=keyword, keyword_zh=keyword, search_query_ja=keyword, keyword_jp=keyword))
+
+    [record] = evaluate(cases, parser)
+
+    assert record.auto_correct is True
+
+
 @pytest.mark.parametrize("error", [GeminiServerError("down"), IrrelevantPostError("not shopping")])
 def test_ai_failure_or_irrelevant_is_not_a_match_even_if_the_raw_text_names_the_model(tmp_path, error):
     cases = load_cases(write_set(tmp_path, TEXT_CASE.replace("收 sony xm5", "收 WH-1000XM5")))
