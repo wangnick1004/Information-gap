@@ -3,6 +3,7 @@ import io
 import json
 import logging
 import os
+import time
 from typing import Any, List, Optional, Union
 
 from google import genai
@@ -14,6 +15,7 @@ from tenacity import (
     AsyncRetrying,
     retry_if_exception,
     stop_after_attempt,
+    stop_after_delay,
     wait_exponential,
 )
 
@@ -24,6 +26,10 @@ from services.scraper import normalize_search_keyword
 logger = logging.getLogger("line_bot.parser")
 
 DEFAULT_FALLBACK_MODEL = "gemini-flash-latest"
+# Gemini 3 系列預設會先「思考」數百個 token（實測 gemini-3.6-flash 約 400–900 個，單次 4–6 秒）；
+# 抽取關鍵字不需要長推理，調成 low 後單次約 2 秒、品質相同。可用環境變數 GEMINI_THINKING_LEVEL 覆寫，
+# 設為 default 則沿用模型預設。
+DEFAULT_THINKING_LEVEL = "low"
 # AI 忙碌、逾時時給使用者的訊息
 AI_BUSY_MESSAGE = "目前 AI 伺服器大塞車，請稍等一兩分鐘後再試一次喔！"
 
@@ -228,6 +234,17 @@ def resolve_model_name(raw_model: Optional[str] = None) -> str:
     return clean
 
 
+def thinking_config_for(model_name: str) -> Optional[types.ThinkingConfig]:
+    """
+    Gemini 3 系列用 thinking_level 控制思考量；其他模型（含 *-latest 別名，實際版本不固定）
+    不一定接受這個參數，維持模型預設以免 400 錯誤。
+    """
+    level = os.getenv("GEMINI_THINKING_LEVEL", DEFAULT_THINKING_LEVEL).strip().lower()
+    if not level or level == "default" or not model_name.startswith("gemini-3"):
+        return None
+    return types.ThinkingConfig(thinking_level=level)
+
+
 def compress_and_resize_image(
     image_input: Union[bytes, Image.Image],
     max_dimension: int = 800,
@@ -349,16 +366,20 @@ async def parse_fb_post(
     mime_type: str = "image/jpeg",
     api_key: Optional[str] = None,
     max_retries: int = 2,
-    retry_delay_seconds: float = 1.0,
+    retry_delay_seconds: float = 0.5,
     vision_prompt: Optional[str] = None,
-    attempt_timeout_seconds: float = 3.0,
+    attempt_timeout_seconds: float = 4.0,
+    total_timeout_seconds: float = 7.0,
 ) -> ParsedItem:
     """
     Extract structured retail item entities (keywords + category) from text or images.
     Every input goes through Gemini so abbreviations and slang are expanded.
 
     每次呼叫 Gemini 最多等 attempt_timeout_seconds，逾時視同暫時性錯誤重試；
-    預設的次數與等待加總在比價流程給 AI 解析的時間內（services.comparison.AI_PARSE_BUDGET_SECONDS）。
+    所有嘗試與等待合計不超過 total_timeout_seconds：重試只拿到剩下的時間，用完就不再重試。
+    預設的 total_timeout_seconds 等於比價流程給 AI 解析的時間（services.comparison.AI_PARSE_BUDGET_SECONDS），
+    因此第一次嘗試可以比「均分兩次」更長（實測單次約 2 秒、偶有 3 秒以上），
+    而 503/429 這類很快就失敗的錯誤仍有時間重試一次。
     """
     cleaned_text = post_text.strip().lower() if post_text else ""
     if not cleaned_text and image_data is None:
@@ -388,12 +409,18 @@ async def parse_fb_post(
         contents.append(cleaned_text)
 
     client = genai.Client(api_key=gemini_key)
-    config = types.GenerateContentConfig(
-        response_mime_type="application/json",
-        response_schema=ParsedItem,
-        system_instruction=SYSTEM_INSTRUCTION,
-        temperature=0.1,
-    )
+
+    def _config_for(model: str) -> types.GenerateContentConfig:
+        return types.GenerateContentConfig(
+            response_mime_type="application/json",
+            response_schema=ParsedItem,
+            system_instruction=SYSTEM_INSTRUCTION,
+            temperature=0.1,
+            thinking_config=thinking_config_for(model),
+            # 沒有傳入任何工具，AFC 本來就不會多打 API（實測關閉前後延遲相同）；關閉只是省掉每次的 AFC 日誌
+            automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
+        )
+
     model_name = resolve_model_name(os.getenv("GEMINI_MODEL", DEFAULT_FALLBACK_MODEL))
     fallback_applied = False
 
@@ -412,9 +439,10 @@ async def parse_fb_post(
         return is_transient_error(exc)
 
     attempt_count = 0
+    started = time.monotonic()
     try:
         async for attempt in AsyncRetrying(
-            stop=stop_after_attempt(max_retries),
+            stop=stop_after_attempt(max_retries) | stop_after_delay(total_timeout_seconds),
             wait=wait_exponential(
                 multiplier=retry_delay_seconds,
                 min=retry_delay_seconds,
@@ -426,10 +454,14 @@ async def parse_fb_post(
             with attempt:
                 attempt_count += 1
                 try:
-                    chat = client.aio.chats.create(model=model_name, config=config)
+                    remaining = total_timeout_seconds - (time.monotonic() - started)
+                    if remaining <= 0:
+                        raise asyncio.TimeoutError()
+                    chat = client.aio.chats.create(model=model_name, config=_config_for(model_name))
                     message_payload = contents if len(contents) > 1 else contents[0]
                     response = await asyncio.wait_for(
-                        chat.send_message(message=message_payload), timeout=attempt_timeout_seconds
+                        chat.send_message(message=message_payload),
+                        timeout=min(attempt_timeout_seconds, remaining),
                     )
 
                     if not response or not response.text:
@@ -445,7 +477,12 @@ async def parse_fb_post(
 
                     # Fallback deduction if model failed to provide keywords
                     if not clean_zh and not clean_jp:
-                        if parsed_result.item_type:
+                        # 部分模型（如 gemini-3.6-flash）只填 perfected_keyword，不填各語言關鍵字
+                        best_name = parsed_result.perfected_keyword or parsed_result.suggested_term
+                        if best_name:
+                            clean_zh = normalize_search_keyword(best_name)
+                            clean_jp = clean_zh
+                        elif parsed_result.item_type:
                             clean_zh = normalize_search_keyword(parsed_result.item_type)
                             clean_jp = clean_zh
                         elif cleaned_text:
@@ -499,7 +536,10 @@ async def parse_fb_post(
         raise
     except Exception as exc:
         if isinstance(exc, asyncio.TimeoutError):
-            logger.error(f"Gemini API timed out ({attempt_timeout_seconds}s per attempt) after {attempt_count} attempts")
+            logger.error(
+                f"Gemini API timed out after {attempt_count} attempts in {time.monotonic() - started:.1f}s "
+                f"(up to {attempt_timeout_seconds}s per attempt, {total_timeout_seconds}s in total)"
+            )
             raise GeminiServerError(AI_BUSY_MESSAGE) from exc
         if is_503_or_server_error(exc):
             logger.error(f"Gemini API 503 ServerError / high demand persisted after {max_retries} attempts: {exc}")
