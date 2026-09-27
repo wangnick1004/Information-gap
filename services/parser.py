@@ -3,7 +3,7 @@ import io
 import json
 import logging
 import os
-from typing import Any, List, Optional, Union
+from typing import Any, Iterable, List, Optional, Union
 
 from google import genai
 from google.genai import types
@@ -132,6 +132,66 @@ class ParsedItem(BaseModel):
 
 # Alias for backward compatibility across modules
 ParsedAnimeItem = ParsedItem
+
+
+class GeminiOutput(BaseModel):
+    """
+    交給 Gemini 的結構化輸出格式：中文與日文關鍵字各只有一個欄位且必填。
+    ParsedItem 的重複欄位（keyword_jp、search_query_ja 等）若都設為選填，Gemini 有時整組不填，
+    日本平台就只剩中文可查。
+    """
+
+    reasoning: str = Field(description="Brief step-by-step explanation of the product identity.")
+    perfected_keyword: str = Field(description="Fully corrected standard product name.")
+    zh_keyword: str = Field(description="Traditional Chinese search query for Taiwanese platforms and Taobao.")
+    jp_keyword: str = Field(
+        description="Authentic native Japanese search query for Japanese platforms. Never Traditional Chinese."
+    )
+    category: Category = Field(description="商品類別：3C 家電、美妝保養、服飾鞋包、動漫周邊/玩具、運動戶外、其他。")
+    franchise: str = Field(default="", description="Brand, manufacturer, or IP/series name.")
+    character: str = Field(default="", description="Model name, product name, or character.")
+    item_type: str = Field(default="", description="Product type in Japanese (e.g., ヘッドホン, フィギュア).")
+    year_or_edition: Optional[str] = Field(default=None, description="Generation, version, size, or year.")
+    fb_price_twd: Optional[int] = Field(default=None, description="Seller's price in TWD, or null.")
+    estimated_min_usd: Optional[int] = Field(default=None, description="預估主商品在市場上的合理最低美金價格。")
+
+
+class JapaneseKeyword(BaseModel):
+    """日文關鍵字補問的輸出格式。"""
+
+    jp_keyword: str
+
+
+_KANA_RANGES = ((0x3040, 0x30FF), (0x31F0, 0x31FF), (0xFF66, 0xFF9F))
+
+
+def _has_kana(text: str) -> bool:
+    return any(lo <= ord(ch) <= hi for ch in text for lo, hi in _KANA_RANGES)
+
+
+def _has_han(text: str) -> bool:
+    return any(0x4E00 <= ord(ch) <= 0x9FFF or 0x3400 <= ord(ch) <= 0x4DBF for ch in text)
+
+
+def is_japanese_keyword(keyword: str, chinese_keywords: Iterable[str] = ()) -> bool:
+    """
+    日本平台可用的關鍵字：含假名，或只有品牌／型號等英數字（如 Nintendo Switch 2）。
+    只有漢字時無法與中文區分，只在與中文關鍵字（或使用者原文）不同時才接受（如「呪術廻戦 五条悟」）。
+    """
+    keyword = normalize_search_keyword(keyword)
+    if not keyword:
+        return False
+    if _has_kana(keyword) or not _has_han(keyword):
+        return True
+    return keyword not in {normalize_search_keyword(text) for text in chinese_keywords if text}
+
+
+JAPANESE_KEYWORD_PROMPT = (
+    "Rewrite this product as a concise search query in authentic native Japanese for Japanese marketplaces "
+    "(Mercari, Yahoo Auctions, Rakuten). Use the official Japanese product/series names, katakana for "
+    "loanwords, and keep brand names and model numbers in Latin form. Never output Chinese.\n"
+    "Product: {product}"
+)
 
 
 class ParsingError(Exception):
@@ -309,8 +369,8 @@ Output: {"reasoning": "'排少' is the anime Haikyu!!, '影山' is Tobio Kageyam
 
 ### 2. Keywords
 - `perfected_keyword`: the optimal, fully corrected standard product name in Traditional Chinese or the official brand/model form (fix typos, casing, abbreviations, incomplete names).
-- `keyword_zh` / `zh_keyword`: concise Traditional Chinese search query for Taiwanese platforms (蝦皮, momo, PChome, Yahoo 購物, 露天) and Taobao.
-- `keyword_jp` / `jp_keyword`: concise search query in authentic native Japanese for Japanese platforms (Rakuten, Mercari, Yahoo Auctions via Buyee). NEVER output Traditional Chinese in this field (e.g., '桌球拍' -> '卓球ラケット', '咒術迴戰' -> '呪術廻戦').
+- `zh_keyword`: concise Traditional Chinese search query for Taiwanese platforms (蝦皮, momo, PChome, Yahoo 購物, 露天) and Taobao.
+- `jp_keyword`: ALWAYS required, even for Chinese input. Concise search query in authentic native Japanese for Japanese platforms (Rakuten, Mercari, Yahoo Auctions via Buyee): Japanese official series/product names and katakana for loanwords. NEVER copy the Chinese keyword or output Traditional Chinese in this field (e.g., '桌球拍' -> '卓球ラケット', '咒術迴戰' -> '呪術廻戦').
 - Keep global brand names and model numbers in standard Latin form (e.g., Sony WH-1000XM5, Switch 2, Air Jordan 1).
 - NEVER add filler words ("本體", "主機", "equipment", "device") unless part of the official name.
 - IGNORE trading noise in keywords: transaction words (售, 收, 徵, 換, 降價, 誠可議, 出清, 回血), condition words (全新, 未拆, 95成新, 二手, 微瑕, 附發票, 盒裝完整), bundling/logistics (綁, 不拆, 面交, 賣貨便, 運費另計).
@@ -341,6 +401,49 @@ Choose exactly one of: "3C 家電", "美妝保養", "服飾鞋包", "動漫周�
 ### Images
 - If an image is provided, inspect logos, packaging text, labels, model numbers, barcodes, and physical form to identify the main product; ignore background and people.
 """.strip()
+
+
+async def _japanese_keyword_fallback(
+    client: Any,
+    model_name: str,
+    parsed: ParsedItem,
+    keyword_zh: str,
+    rejected_jp: str,
+    chinese_keywords: Iterable[str],
+    timeout_seconds: float,
+) -> str:
+    """
+    AI 沒給出可用的日文關鍵字時：先單獨再問一次日文關鍵字，再試 item_type，
+    都不行才退回中文關鍵字。每一步都留 warning log，不默默改用中文。
+    """
+    logger.warning(
+        f"[Japanese Keyword] AI returned no usable Japanese keyword (got '{rejected_jp}') for '{keyword_zh}'; asking again"
+    )
+    product = parsed.perfected_keyword or keyword_zh
+    try:
+        chat = client.aio.chats.create(
+            model=model_name,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json", response_schema=JapaneseKeyword, temperature=0.1
+            ),
+        )
+        response = await asyncio.wait_for(
+            chat.send_message(message=JAPANESE_KEYWORD_PROMPT.format(product=product)), timeout=timeout_seconds
+        )
+        retried = normalize_search_keyword(JapaneseKeyword.model_validate_json(response.text).jp_keyword)
+        if is_japanese_keyword(retried, chinese_keywords):
+            logger.info(f"[Japanese Keyword] retry produced '{retried}'")
+            return retried
+        logger.warning(f"[Japanese Keyword] retry still not Japanese: '{retried}'")
+    except Exception as exc:
+        logger.warning(f"[Japanese Keyword] retry failed: {type(exc).__name__}: {exc}")
+
+    item_type = normalize_search_keyword(parsed.item_type)
+    if is_japanese_keyword(item_type, chinese_keywords):
+        logger.warning(f"[Japanese Keyword] using item_type '{item_type}' for Japanese platforms")
+        return item_type
+    logger.warning(f"[Japanese Keyword] falling back to Chinese keyword '{keyword_zh}' for Japanese platforms")
+    return keyword_zh
 
 
 async def parse_fb_post(
@@ -390,7 +493,7 @@ async def parse_fb_post(
     client = genai.Client(api_key=gemini_key)
     config = types.GenerateContentConfig(
         response_mime_type="application/json",
-        response_schema=ParsedItem,
+        response_schema=GeminiOutput,
         system_instruction=SYSTEM_INSTRUCTION,
         temperature=0.1,
     )
@@ -440,24 +543,19 @@ async def parse_fb_post(
                     parsed_result = ParsedItem.model_validate(raw_json)
 
                     # Normalize keywords (spacing, full-width space removal, uppercase ASCII)
-                    clean_jp = normalize_search_keyword(parsed_result.keyword_jp or parsed_result.search_query_ja)
-                    clean_zh = normalize_search_keyword(parsed_result.keyword_zh or f"{parsed_result.franchise} {parsed_result.character}")
+                    clean_zh = normalize_search_keyword(
+                        parsed_result.keyword_zh or f"{parsed_result.franchise} {parsed_result.character}"
+                    ) or normalize_search_keyword(parsed_result.perfected_keyword or "")
+                    if not clean_zh:
+                        clean_zh = normalize_search_keyword(cleaned_text[:30]) or "熱門精選商品"
 
-                    # Fallback deduction if model failed to provide keywords
-                    if not clean_zh and not clean_jp:
-                        if parsed_result.item_type:
-                            clean_zh = normalize_search_keyword(parsed_result.item_type)
-                            clean_jp = clean_zh
-                        elif cleaned_text:
-                            clean_zh = normalize_search_keyword(cleaned_text[:30])
-                            clean_jp = clean_zh
-                        else:
-                            clean_zh = "熱門精選商品"
-                            clean_jp = "人気商品"
-                    elif not clean_zh:
-                        clean_zh = clean_jp
-                    elif not clean_jp:
-                        clean_jp = clean_zh
+                    clean_jp = normalize_search_keyword(parsed_result.keyword_jp or parsed_result.search_query_ja)
+                    chinese_keywords = (clean_zh, parsed_result.perfected_keyword, cleaned_text)
+                    if not is_japanese_keyword(clean_jp, chinese_keywords):
+                        clean_jp = await _japanese_keyword_fallback(
+                            client, model_name, parsed_result, clean_zh, clean_jp, chinese_keywords,
+                            attempt_timeout_seconds,
+                        )
 
                     parsed_result.keyword_jp = clean_jp
                     parsed_result.search_query_ja = clean_jp

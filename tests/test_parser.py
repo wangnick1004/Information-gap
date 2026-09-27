@@ -9,11 +9,13 @@ from google.genai.errors import APIError, ServerError
 
 from services.parser import (
     GeminiAPIError,
+    GeminiOutput,
     GeminiRateLimitError,
     GeminiServerError,
     IrrelevantPostError,
     ParsedItem,
     compress_and_resize_image,
+    is_japanese_keyword,
     parse_fb_post,
     resolve_model_name,
 )
@@ -898,7 +900,7 @@ def _hanging_then(*responses):
 @pytest.mark.anyio
 async def test_parse_fb_post_abandons_a_hanging_attempt_and_retries():
     success = MagicMock()
-    success.text = json.dumps({"keyword_zh": "Switch 2", "category": "3C 家電"})
+    success.text = json.dumps({"keyword_zh": "Switch 2", "jp_keyword": "Nintendo Switch 2", "category": "3C 家電"})
 
     with patch("services.parser.genai.Client") as mock_client_class:
         mock_chat = MagicMock()
@@ -942,3 +944,127 @@ def test_parse_fb_post_default_retries_fit_in_the_ai_budget():
 
     assert defaults["attempt_timeout_seconds"] <= 3.0
     assert worst_case <= AI_PARSE_BUDGET_SECONDS
+
+
+# --- 日本平台的日文關鍵字（工作票 20）---
+
+def _gemini_returning_in_order(*payloads):
+    """Patch Gemini client so successive chat messages return the given JSON payloads (or raise) in order."""
+    responses = []
+    for payload in payloads:
+        if isinstance(payload, BaseException):
+            responses.append(payload)
+            continue
+        response = MagicMock()
+        response.text = json.dumps(payload)
+        responses.append(response)
+    patcher = patch("services.parser.genai.Client")
+    mock_client_class = patcher.start()
+    mock_chat = MagicMock()
+    mock_client_class.return_value.aio.chats.create.return_value = mock_chat
+    mock_chat.send_message = AsyncMock(side_effect=responses)
+    return patcher, mock_chat
+
+
+@pytest.mark.parametrize(
+    "keyword, expected",
+    [
+        ("呪術廻戦 五条悟 フィギュア", True),
+        ("Nintendo Switch 2", True),
+        ("SONY WH-1000XM5", True),
+        ("呪術廻戦 五条悟", True),  # 只有漢字，但與中文關鍵字不同
+        ("咒術迴戰 五條悟 公仔", False),  # 與中文關鍵字相同
+        ("", False),
+        ("   ", False),
+    ],
+)
+def test_is_japanese_keyword(keyword, expected):
+    assert is_japanese_keyword(keyword, ["咒術迴戰 五條悟 公仔"]) is expected
+
+
+def test_gemini_output_requires_one_chinese_and_one_japanese_keyword():
+    schema = GeminiOutput.model_json_schema()
+    assert {"zh_keyword", "jp_keyword", "perfected_keyword", "category"} <= set(schema["required"])
+    assert not {"keyword_jp", "search_query_ja", "keyword_zh"} & set(schema["properties"])
+
+
+@pytest.mark.anyio
+async def test_gemini_is_asked_with_the_required_keyword_schema():
+    patcher, mock_client_class, _ = _gemini_returning(
+        {"zh_keyword": "排球少年 影山飛雄", "jp_keyword": "ハイキュー 影山飛雄", "category": "動漫周邊/玩具"}
+    )
+    try:
+        await parse_fb_post("排少 影山", api_key="fake_key")
+    finally:
+        patcher.stop()
+
+    config = mock_client_class.return_value.aio.chats.create.call_args.kwargs["config"]
+    assert config.response_schema is GeminiOutput
+
+
+@pytest.mark.anyio
+async def test_valid_japanese_keyword_needs_no_second_question():
+    patcher, _, mock_chat = _gemini_returning(
+        {"zh_keyword": "咒術迴戰 五條悟 公仔", "jp_keyword": "呪術廻戦 五条悟 フィギュア", "category": "動漫周邊/玩具"}
+    )
+    try:
+        result = await parse_fb_post("咒術迴戰 五條悟 公仔", api_key="fake_key")
+    finally:
+        patcher.stop()
+
+    assert result.keyword_jp == result.search_query_ja == "呪術廻戦 五条悟 フィギュア"
+    assert result.keyword_zh == "咒術迴戰 五條悟 公仔"
+    mock_chat.send_message.assert_awaited_once()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "first_payload",
+    [
+        # 實際重現：Gemini 只填 perfected_keyword，所有關鍵字欄位都是 null
+        {"perfected_keyword": "咒術迴戰 五條悟 公仔", "zh_keyword": None, "jp_keyword": None, "category": "動漫周邊/玩具"},
+        # 日文欄位照抄中文
+        {"zh_keyword": "咒術迴戰 五條悟 公仔", "jp_keyword": "咒術迴戰 五條悟 公仔", "category": "動漫周邊/玩具"},
+    ],
+)
+async def test_missing_or_chinese_japanese_keyword_is_asked_again(first_payload, caplog):
+    patcher, mock_chat = _gemini_returning_in_order(first_payload, {"jp_keyword": "呪術廻戦 五条悟 フィギュア"})
+    try:
+        result = await parse_fb_post("咒術迴戰 五條悟 公仔", api_key="fake_key")
+    finally:
+        patcher.stop()
+
+    assert result.keyword_jp == result.search_query_ja == "呪術廻戦 五条悟 フィギュア"
+    assert result.keyword_zh == "咒術迴戰 五條悟 公仔"
+    assert mock_chat.send_message.await_count == 2
+    assert "咒術迴戰 五條悟 公仔" in mock_chat.send_message.await_args.kwargs["message"]
+    assert "[Japanese Keyword]" in caplog.text
+
+
+@pytest.mark.anyio
+async def test_item_type_is_used_when_second_question_is_still_chinese():
+    patcher, _ = _gemini_returning_in_order(
+        {"zh_keyword": "五條悟 公仔", "jp_keyword": "", "item_type": "フィギュア", "category": "動漫周邊/玩具"},
+        {"jp_keyword": "五條悟 公仔"},
+    )
+    try:
+        result = await parse_fb_post("五條悟 公仔", api_key="fake_key")
+    finally:
+        patcher.stop()
+
+    assert result.keyword_jp == "フィギュア"
+
+
+@pytest.mark.anyio
+async def test_chinese_fallback_for_japanese_platforms_is_logged(caplog):
+    patcher, _ = _gemini_returning_in_order(
+        {"zh_keyword": "五條悟 公仔", "jp_keyword": "", "category": "動漫周邊/玩具"},
+        APIError(400, {"error": {"message": "bad request"}}),
+    )
+    try:
+        result = await parse_fb_post("五條悟 公仔", api_key="fake_key")
+    finally:
+        patcher.stop()
+
+    assert result.keyword_jp == "五條悟 公仔"
+    assert "falling back to Chinese keyword" in caplog.text

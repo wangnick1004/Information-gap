@@ -1,5 +1,6 @@
 """比價流程入口（services.comparison.compare_prices）的測試：只換外部依賴（AI、平台轉接器、時鐘、快取）。"""
 
+import urllib.parse
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -553,3 +554,38 @@ async def test_results_with_timed_out_platforms_are_not_cached():
     await run(text="switch", platforms=platforms, cache=cache, clock=clock)
 
     assert len(cache) == 0
+
+
+# --- 日本平台的日文關鍵字（工作票 20）---
+
+@pytest.mark.anyio
+async def test_japanese_platforms_search_in_japanese_and_taiwanese_platforms_in_chinese(no_affiliates):
+    item = switch_item(
+        keyword_zh="咒術迴戰 五條悟 公仔",
+        keyword_jp="呪術廻戦 五条悟 フィギュア",
+        search_query_ja="呪術廻戦 五条悟 フィギュア",
+        perfected_keyword="咒術迴戰 五條悟 公仔",
+        category="動漫周邊/玩具",
+    )
+    mercari, rakuten, shopee = (FakeAdapter(failed(FetchStatus.NO_RESULTS)) for _ in range(3))
+    platforms = fake_platforms(mercari=mercari, rakuten=rakuten, shopee=shopee)
+
+    result = await run(text="咒術迴戰 五條悟 公仔", parser=FakeParser(item), platforms=platforms)
+
+    assert mercari.calls == rakuten.calls == ["呪術廻戦 五条悟 フィギュア"]
+    assert shopee.calls == ["咒術迴戰 五條悟 公仔"]
+    japanese = urllib.parse.quote("呪術廻戦 五条悟 フィギュア")
+    for name in ("mercari", "yahoo_jp", "rakuten"):
+        assert japanese in result.platforms[name].search_url
+    assert urllib.parse.quote("咒術迴戰 五條悟 公仔") in result.platforms["shopee"].search_url
+
+
+@pytest.mark.anyio
+async def test_missing_japanese_keyword_falls_back_to_chinese_with_a_warning(caplog):
+    item = ParsedItem(keyword_zh="某商品", category="動漫周邊/玩具")
+    mercari = FakeAdapter(failed(FetchStatus.NO_RESULTS))
+
+    await run(text="某商品", parser=FakeParser(item), platforms=fake_platforms(mercari=mercari))
+
+    assert mercari.calls == ["某商品"]
+    assert "no Japanese keyword" in caplog.text
