@@ -316,7 +316,11 @@ def _keywords(text: Optional[str], parsed_item: Optional[ParsedItem]) -> Tuple[s
         or parsed_item.keyword_zh
         or f"{parsed_item.franchise} {parsed_item.character}"
     ).strip() or fallback_zh
-    keyword_jp = (parsed_item.search_query_ja or parsed_item.keyword_jp or keyword_zh).strip()
+    keyword_jp = (parsed_item.search_query_ja or parsed_item.keyword_jp).strip()
+    if not keyword_jp:
+        # 解析器已確保有日文關鍵字；走到這裡代表換了別的解析器，日本平台只能用中文查
+        logger.warning(f"[Search Keywords] no Japanese keyword, Japanese platforms use Chinese '{keyword_zh}'")
+        keyword_jp = keyword_zh
     return keyword_zh, keyword_jp
 
 
