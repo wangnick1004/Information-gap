@@ -130,6 +130,7 @@ Supersedes: 舊版 PROJECT_SPEC.md（動漫周邊 / FB 網址 / Netlify 版本�
    - 介面：給定關鍵字與逾時 → 回傳商品清單（標題、價格、幣別、連結、可選縮圖）；失敗時回傳明確的失敗狀態而非拋出未處理例外。
    - 資料來源優先順序：官方 API ／ 聯盟行銷 API → 網頁爬取備援。付費第三方 API（RapidAPI）僅在評測設定下啟用，正式服務關閉。
    - 既有平台（Mercari/Buyee、日本樂天、日本 Yahoo 拍賣、蝦皮、淘寶、台灣 Yahoo）重構為此介面。
+   - Mercari：Buyee 的 Mercari 搜尋頁被 AWS WAF 挑戰擋下（工作票 21），正式服務只提供 Buyee 搜尋連結、不發請求；只有評測模式（付費 RapidAPI）有價格。
    - 新增平台依序：PChome → momo → 露天 → Yahoo 購物。各平台的可用 API／爬取方式需在實作前查證。
    - 刪除所有產生假價格（mock plausible price）的程式路徑。
 

@@ -6,14 +6,14 @@
 
 **Blocked by:** 無
 
-**Status:** ready-for-agent（第一項需在 Render 上人工執行）
+**Status:** 程式完成，待人工補 Render log 證據（見第一項；取得前不要推送）
 
-- [ ] 人工：在 Render Shell 執行 `curl -s -o /dev/null -w "%{http_code}\n" -A "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36" "https://buyee.jp/mercari/search?keyword=test"`，並對 `https://buyee.jp/rakuten/shopping/search/category/0?query=test` 做同樣測試，把兩個狀態碼寫進 Notes（預期 Mercari 202 或 403、樂天 200）。另可在 Render log 搜 `blocked` / `HTTP 202` 佐證
-- [ ] 正式環境 `build_platforms(evaluation_mode=False)` 的 `mercari` 不再掛 `BuyeeMercariAdapter`（改成 `adapter=None`，比照 `yahoo_jp`），搜尋連結與 Buyee 聯盟參數維持不變；評測模式仍用 `MercariRapidApiAdapter`
-- [ ] 比價入口測試（假 AI）：正式模式下 Mercari 不發出任何 HTTP 請求，卡片上 Mercari 仍有日文關鍵字的 Buyee 搜尋連結，且不顯示成失敗
-- [ ] `BuyeeMercariAdapter` 保留（含 202→`blocked` 的既有測試），不刪；程式註解寫明停用原因與日期，方便日後恢復
-- [ ] 檢查 `services/comparison.py` 中依賴 Mercari 成功結果的舊卡片欄位（`_with_legacy_card_fields`）在 Mercari 無轉接器時不出錯
-- [ ] 規格書中「Mercari 顯示即時價格」的描述（若有）改成正式環境只給連結、評測模式才有價格
+- [ ] 人工：確認 Render 上同樣被擋。~~在 Render Shell 執行 curl~~（Render Shell 僅限付費方案，改用下列方式）：目前 Render 上的版本（origin/main，c945a56）每次比價都會記一行 `[Platform] mercari: <狀態> in <毫秒> (<筆數> listings) <細節>`，這就是 Render 出口 IP、帶正式 `DEFAULT_HEADERS` 的真實請求，比 curl 更貼近正式環境。**在部署本票之前**，用 LINE 送一筆動漫周邊查詢（例如「咒術迴戰 五條悟 公仔」），到 Render 儀表板 → 服務 → Logs 搜尋 `[Platform]`，把 mercari 與 rakuten 兩行貼進 Notes（預期 `mercari: blocked ... HTTP 202` 或 `HTTP 403`、`rakuten: ok`）。本票部署後 Mercari 不再發請求，就看不到這行了。Render 預設在推送 main 後自動部署，且免費方案 log 保留時間短，所以**取得 log 前不要推送本票的 commit**
+- [x] 正式環境 `build_platforms(evaluation_mode=False)` 的 `mercari` 不再掛 `BuyeeMercariAdapter`（改成 `adapter=None`，比照 `yahoo_jp`），搜尋連結與 Buyee 聯盟參數維持不變；評測模式仍用 `MercariRapidApiAdapter`
+- [x] 比價入口測試（假 AI）：正式模式下 Mercari 不發出任何 HTTP 請求，卡片上 Mercari 仍有日文關鍵字的 Buyee 搜尋連結，且不顯示成失敗
+- [x] `BuyeeMercariAdapter` 保留（含 202→`blocked` 的既有測試），不刪；程式註解寫明停用原因與日期，方便日後恢復
+- [x] 檢查 `services/comparison.py` 中依賴 Mercari 成功結果的舊卡片欄位（`_with_legacy_card_fields`）在 Mercari 無轉接器時不出錯
+- [x] 規格書中「Mercari 顯示即時價格」的描述（若有）改成正式環境只給連結、評測模式才有價格
 
 **Notes：**
 - 發現經過：20 實作後以「呪術廻戦 五条悟 フィギュア」實測，日本樂天（Buyee）20 筆，Mercari（Buyee）`blocked`；中文關鍵字同樣 `blocked`，與關鍵字語言無關。
@@ -31,3 +31,12 @@
   - 付費：評測模式已有 `MercariRapidApiAdapter`，但正式環境不增加費用是既定方向。
 - 相關發現（已開 22，不在本票範圍）：日本 Yahoo 拍賣官網 `auctions.yahoo.co.jp/search/search?p=...` 是伺服器端輸出的 HTML，可直接取得（200），價格在 `.Product__priceValue`，不經 Buyee WAF。若要讓日本 Yahoo 拍賣有即時價格，可做直接抓官網、連結仍導向 Buyee 的轉接器；需先確認 robots.txt 與使用條款。Buyee 樂天目前沒被挑戰，但同一個 WAF 隨時可能擴大範圍，`BuyeeRakutenAdapter` 回 `blocked` 時要能從 log 看出來。
 - 相關程式：`services/platforms.py`（`BuyeeMercariAdapter`、`_fetch` 的 202/403→`BLOCKED`、`build_platforms`）、`services/comparison.py`（`_with_legacy_card_fields`）、`services/scraper.py`（`DEFAULT_HEADERS`）、`tests/test_platform_adapters.py`。
+
+**Notes（實作後）：**
+- 驗證方式：Render 免費方案沒有 Shell，改為查 Render log 中既有的 `[Platform]` 行（見第一項）；部署前做才看得到。log 只能證明狀態碼，看不到 `x-amzn-waf-action` 標頭；標頭證據來自本機重測。Render log 結果：（待補）
+- 本機重測（2026-09-27，台灣住宅網路，Chrome 140 UA）：`/mercari/search?keyword=test` → `HTTP/2 202`、`server: awselb/2.0`、`x-amzn-waf-action: challenge`；`/rakuten/shopping/search/category/0?query=test` → `HTTP/2 200`、`server: Apache`。
+- `build_platforms(evaluation_mode=False)` 的 `mercari` 改為 `adapter=None`；搜尋連結 `_mercari_link`（Buyee、聯盟參數）不變，評測模式仍為 `MercariRapidApiAdapter`。
+- 正式模式下 Mercari 狀態為 `link_only`，卡片按鈕顯示「Mercari (點擊查看)」，與日本 Yahoo 拍賣相同，不是失敗（`_platform_button` 不看狀態，所以失敗時的文字其實也一樣；測試以狀態 `link_only` 驗證）。
+- `_with_legacy_card_fields` 只在 Mercari 有 `OK` 結果時呼叫；無轉接器時 `fetched` 沒有 mercari，直接略過，卡片走一般平台按鈕版本。測試 `test_mercari_is_link_only_in_production_without_any_request` 以真實平台集合（記錄所有 HTTP 請求）確認不會請求 `/mercari/`，且 `scraper_result`／`pricing` 為 None。
+- 影響：正式環境原本的「完整卡片」（Mercari 中位數落地價、代表圖）只在 Mercari 有結果時出現，實際上自 04 起就不曾出現；本票後正式環境不會再走這條路徑，只有評測模式可能出現。
+- 恢復方式：Buyee 解除挑戰後，把 `build_platforms()` 中正式模式的 `mercari_adapter` 改回 `BuyeeMercariAdapter(http=http)`、價格規則 `buyee_mercari_price` 仍保留在原處。
