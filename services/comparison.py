@@ -49,7 +49,9 @@ CACHE_TTL_SECONDS = 3600.0
 DEADLINE_SECONDS = 15.0
 # 保留給組卡片與送出 LINE 回覆的時間；平台查詢最晚在 DEADLINE_SECONDS - REPLY_MARGIN_SECONDS 截止
 REPLY_MARGIN_SECONDS = 1.0
-# AI 解析（含重試與等待）的上限：單次約 3 秒，最多再重試一次
+# AI 解析（含重試與等待）的上限。單次實測約 2 秒（thinking low）；解析器第一次最多等 4 秒，
+# 失敗或逾時後用剩下的時間重試一次（見 services.parser.parse_fb_post 的 total_timeout_seconds）。
+# 解析最慢在第 7 秒結束，平台查詢至少還有 15 - 1 - 7 = 7 秒。
 AI_PARSE_BUDGET_SECONDS = 7.0
 # 舊版卡片的 Mercari 統計只採計前 15 筆
 LEGACY_CARD_SAMPLE_SIZE = 15

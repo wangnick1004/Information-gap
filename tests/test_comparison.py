@@ -7,7 +7,9 @@ import pytest
 
 from services.cache import TTLCache
 from services.comparison import (
+    AI_PARSE_BUDGET_SECONDS,
     DEADLINE_SECONDS,
+    REPLY_MARGIN_SECONDS,
     GEMINI_VISION_PROMPT,
     AiTimeoutError,
     PlatformStatus,
@@ -440,6 +442,39 @@ async def test_slow_ai_parsing_counts_against_the_same_deadline():
     assert clock.monotonic() <= DEADLINE_SECONDS
     assert result.platforms["rakuten"].status is PlatformStatus.TIMEOUT
     assert result.platforms["mercari"].status is PlatformStatus.TIMEOUT
+
+
+@pytest.mark.anyio
+async def test_ai_parse_using_nearly_the_whole_budget_still_gets_prices():
+    """
+    解析器第一次嘗試逾時（4 秒）、等 0.5 秒後重試成功（2.4 秒），共 6.9 秒：仍採用解析結果，
+    且平台查詢還有 15 - 1 - 7 = 7 秒。
+    """
+    clock = FakeClock(FIXED_NOW)
+    parser = SlowParser(clock, 6.9, switch_item())
+    platform_window = DEADLINE_SECONDS - REPLY_MARGIN_SECONDS - AI_PARSE_BUDGET_SECONDS
+    platforms = anime_platforms(clock, mercari=(platform_window, found(30000.0)), rakuten=(1, found(37000.0)))
+
+    result = await run(text="switch", parser=parser, platforms=platforms, clock=clock)
+
+    assert result.ai_unavailable is False
+    assert result.platforms["mercari"].status is PlatformStatus.OK
+    assert result.platforms["rakuten"].status is PlatformStatus.OK
+    assert clock.monotonic() == pytest.approx(6.9 + platform_window)
+    assert clock.monotonic() <= DEADLINE_SECONDS - REPLY_MARGIN_SECONDS
+
+
+@pytest.mark.anyio
+async def test_ai_parse_over_budget_degrades_to_links_at_the_budget():
+    clock = FakeClock(FIXED_NOW)
+    parser = SlowParser(clock, AI_PARSE_BUDGET_SECONDS + 0.1, switch_item())
+    mercari = FakeAdapter(found(30000.0))
+
+    result = await run(text="switch", parser=parser, platforms=fake_platforms(mercari=mercari), clock=clock)
+
+    assert result.ai_unavailable is True
+    assert clock.monotonic() == pytest.approx(AI_PARSE_BUDGET_SECONDS)
+    assert mercari.calls == []
 
 
 @pytest.mark.anyio

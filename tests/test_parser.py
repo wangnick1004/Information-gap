@@ -876,6 +876,28 @@ async def test_undeterminable_category_becomes_other(raw_category):
     assert result.category.value == "其他"
 
 
+@pytest.mark.anyio
+async def test_only_perfected_keyword_is_used_instead_of_the_raw_post():
+    """gemini-3.6-flash 常只回 perfected_keyword；不可退回用原文（含「售」、價格）搜尋。"""
+    payload = {"perfected_keyword": "Nintendo Switch 2", "category": "3C 家電"}
+    patcher, _, _ = _gemini_returning(payload)
+    try:
+        result = await parse_fb_post("售 switch2 主機 台灣公司貨 12000", api_key="fake_key")
+    finally:
+        patcher.stop()
+
+    assert result.keyword_zh == "NINTENDO SWITCH 2"
+    assert result.keyword_jp == "NINTENDO SWITCH 2"
+
+
+def test_prompt_keeps_the_generation_the_user_wrote():
+    """提示詞曾以 'airpods' -> 'AirPods Pro 2' 為例，導致模型把使用者寫的「pro 3」改成 Pro 2。"""
+    from services.parser import SYSTEM_INSTRUCTION
+
+    assert "KEEP WHAT THE USER WROTE" in SYSTEM_INSTRUCTION
+    assert "AirPods Pro 2" not in SYSTEM_INSTRUCTION
+
+
 def test_gemini_schema_limits_category_to_six_values():
     schema = ParsedItem.model_json_schema()
     category_schema = schema["$defs"][schema["properties"]["category"]["$ref"].split("/")[-1]]
@@ -930,8 +952,11 @@ async def test_parse_fb_post_every_attempt_hanging_is_an_ai_busy_error():
     assert mock_chat.send_message.await_count == 2
 
 
-def test_parse_fb_post_default_retries_fit_in_the_ai_budget():
-    """預設的單次上限、重試次數與等待加總不超過比價流程給 AI 解析的時間。"""
+def test_parse_fb_post_default_budget_matches_the_comparison_ai_budget():
+    """
+    解析器的總時限等於比價流程給 AI 解析的時間；第一次嘗試比均分兩次長，
+    且逾時後仍留得下一次重試（實測單次約 2 秒）。
+    """
     import inspect
 
     from services.comparison import AI_PARSE_BUDGET_SECONDS
@@ -939,11 +964,82 @@ def test_parse_fb_post_default_retries_fit_in_the_ai_budget():
     defaults = {
         name: param.default for name, param in inspect.signature(parse_fb_post).parameters.items()
     }
-    attempts = defaults["max_retries"]
-    worst_case = attempts * defaults["attempt_timeout_seconds"] + (attempts - 1) * defaults["retry_delay_seconds"]
+    after_first_timeout = (
+        defaults["total_timeout_seconds"] - defaults["attempt_timeout_seconds"] - defaults["retry_delay_seconds"]
+    )
 
-    assert defaults["attempt_timeout_seconds"] <= 3.0
-    assert worst_case <= AI_PARSE_BUDGET_SECONDS
+    assert defaults["total_timeout_seconds"] == AI_PARSE_BUDGET_SECONDS
+    assert defaults["max_retries"] == 2
+    assert defaults["attempt_timeout_seconds"] > AI_PARSE_BUDGET_SECONDS / 2
+    assert after_first_timeout >= 2.0
+
+
+@pytest.mark.anyio
+async def test_parse_fb_post_retry_only_gets_the_remaining_total_budget():
+    import time
+
+    with patch("services.parser.genai.Client") as mock_client_class:
+        mock_chat = MagicMock()
+        mock_client_class.return_value.aio.chats.create.return_value = mock_chat
+        mock_chat.send_message = AsyncMock(side_effect=_hanging_then(None, None))
+
+        started = time.monotonic()
+        with pytest.raises(GeminiServerError):
+            await parse_fb_post(
+                "switch2", api_key="fake_api_key",
+                attempt_timeout_seconds=0.2, retry_delay_seconds=0.05, total_timeout_seconds=0.3,
+            )
+        elapsed = time.monotonic() - started
+
+    # 不設總時限時要 0.2 + 0.05 + 0.2 = 0.45 秒
+    assert mock_chat.send_message.await_count == 2
+    assert elapsed < 0.4
+
+
+@pytest.mark.anyio
+async def test_parse_fb_post_does_not_retry_once_the_total_budget_is_spent():
+    with patch("services.parser.genai.Client") as mock_client_class:
+        mock_chat = MagicMock()
+        mock_client_class.return_value.aio.chats.create.return_value = mock_chat
+        mock_chat.send_message = AsyncMock(side_effect=_hanging_then(None, None))
+
+        with pytest.raises(GeminiServerError):
+            await parse_fb_post(
+                "switch2", api_key="fake_api_key",
+                attempt_timeout_seconds=0.1, retry_delay_seconds=0.01, total_timeout_seconds=0.1,
+            )
+
+    assert mock_chat.send_message.await_count == 1
+
+
+def _thinking_config_sent(monkeypatch, model, level=None):
+    monkeypatch.setenv("GEMINI_MODEL", model)
+    if level is None:
+        monkeypatch.delenv("GEMINI_THINKING_LEVEL", raising=False)
+    else:
+        monkeypatch.setenv("GEMINI_THINKING_LEVEL", level)
+    patcher, mock_client_class, _ = _gemini_returning({"keyword_zh": "Switch 2", "category": "3C 家電"})
+    try:
+        asyncio.run(parse_fb_post("switch2", api_key="fake_api_key"))
+    finally:
+        patcher.stop()
+    config = mock_client_class.return_value.aio.chats.create.call_args.kwargs["config"]
+    assert config.automatic_function_calling.disable is True
+    return config.thinking_config
+
+
+def test_gemini_3_models_think_at_low_level_by_default(monkeypatch):
+    thinking = _thinking_config_sent(monkeypatch, "gemini-3.6-flash")
+    assert thinking.thinking_level.value.lower() == "low"
+
+
+def test_thinking_level_can_be_overridden_or_left_at_model_default(monkeypatch):
+    assert _thinking_config_sent(monkeypatch, "gemini-3.6-flash", "high").thinking_level.value.lower() == "high"
+    assert _thinking_config_sent(monkeypatch, "gemini-3.6-flash", "default") is None
+
+
+def test_models_outside_gemini_3_keep_their_default_thinking(monkeypatch):
+    assert _thinking_config_sent(monkeypatch, "gemini-flash-latest") is None
 
 
 # --- 日本平台的日文關鍵字（工作票 20）---
@@ -1068,3 +1164,35 @@ async def test_chinese_fallback_for_japanese_platforms_is_logged(caplog):
 
     assert result.keyword_jp == "五條悟 公仔"
     assert "falling back to Chinese keyword" in caplog.text
+
+
+@pytest.mark.anyio
+async def test_japanese_keyword_retry_only_gets_the_remaining_total_budget():
+    """日文關鍵字補問也計入解析總時限：補問卡住時，最晚在總時限到時退回中文關鍵字。"""
+    import time
+
+    first = MagicMock()
+    first.text = json.dumps({"perfected_keyword": "五條悟 公仔", "zh_keyword": "五條悟 公仔", "jp_keyword": "五條悟 公仔",
+                             "category": "動漫周邊/玩具"})
+
+    async def send_message(**kwargs):
+        if send_message.calls:
+            await asyncio.sleep(3600)
+        send_message.calls += 1
+        return first
+    send_message.calls = 0
+
+    with patch("services.parser.genai.Client") as mock_client_class:
+        mock_chat = MagicMock()
+        mock_client_class.return_value.aio.chats.create.return_value = mock_chat
+        mock_chat.send_message = send_message
+
+        started = time.monotonic()
+        result = await parse_fb_post(
+            "五條悟 公仔", api_key="fake_api_key", attempt_timeout_seconds=0.5, total_timeout_seconds=0.2
+        )
+        elapsed = time.monotonic() - started
+
+    assert result.keyword_jp == "五條悟 公仔"
+    # 補問若拿完整的單次上限要 0.5 秒
+    assert elapsed < 0.4
