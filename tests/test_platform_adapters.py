@@ -256,9 +256,15 @@ def test_rapidapi_adapters_are_disabled_outside_evaluation_mode():
     platforms = build_platforms(evaluation_mode=False)
     adapters = [p.adapter for p in platforms.values() if p.adapter is not None]
     assert not any(isinstance(a, (MercariRapidApiAdapter, ShopeeRapidApiAdapter)) for a in adapters)
-    assert isinstance(platforms["mercari"].adapter, BuyeeMercariAdapter)
     assert isinstance(platforms["rakuten"].adapter, BuyeeRakutenAdapter)
     assert platforms["shopee"].adapter is None
+
+
+def test_mercari_is_link_only_outside_evaluation_mode():
+    # 21：Buyee Mercari 被 AWS WAF 擋下，正式環境只給搜尋連結（BuyeeMercariAdapter 保留待恢復）
+    platforms = build_platforms(evaluation_mode=False)
+    assert platforms["mercari"].adapter is None
+    assert platforms["mercari"].search_url("呪術廻戦").startswith("https://buyee.jp/mercari/search?keyword=")
 
 
 def test_rapidapi_adapters_enabled_in_evaluation_mode():

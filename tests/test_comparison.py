@@ -22,7 +22,7 @@ from services.parser import (
     IrrelevantPostError,
     ParsedItem,
 )
-from services.platforms import FetchStatus
+from services.platforms import FetchStatus, build_platforms
 from services.pricing import convert_to_twd
 from tests.fakes import FakeAdapter, FakeClock, FakeParser, SlowAdapter, SlowParser, failed, fake_platforms, found
 
@@ -220,7 +220,6 @@ async def test_all_platforms_fail_yields_no_prices():
 async def test_no_results_means_no_match_and_never_a_made_up_price():
     result = await run(text="switch")
 
-    assert result.platforms["mercari"].status is PlatformStatus.NO_MATCH
     assert result.platforms["rakuten"].status is PlatformStatus.NO_MATCH
     assert all(q.min_price_twd is None for q in result.platforms.values())
 
@@ -624,3 +623,24 @@ async def test_missing_japanese_keyword_falls_back_to_chinese_with_a_warning(cap
 
     assert mercari.calls == ["某商品"]
     assert "no Japanese keyword" in caplog.text
+
+
+@pytest.mark.anyio
+async def test_mercari_is_link_only_in_production_without_mercari_request(no_affiliates):
+    # 21：Buyee 的 /mercari/* 被 AWS WAF 挑戰擋下，正式環境不再查 Mercari，只給搜尋連結
+    item = switch_item(keyword_jp="呪術廻戦 五条悟 フィギュア", search_query_ja="呪術廻戦 五条悟 フィギュア")
+    requested = []
+
+    async def http(url, headers, timeout):
+        requested.append(url)
+        return 404, ""
+
+    result = await run(text="咒術迴戰 五條悟 公仔", parser=FakeParser(item),
+                       platforms=build_platforms(evaluation_mode=False, http=http))
+
+    assert requested and not any("/mercari/" in url for url in requested)
+    mercari = result.platforms["mercari"]
+    assert mercari.status is PlatformStatus.LINK_ONLY
+    assert mercari.search_url.startswith("https://buyee.jp/mercari/search?keyword=")
+    assert urllib.parse.quote("呪術廻戦 五条悟 フィギュア") in mercari.search_url
+    assert result.scraper_result is None and result.pricing is None

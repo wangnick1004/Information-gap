@@ -172,7 +172,13 @@ def _parse_cards(cards: List[Any], parse_card: Callable[[Any], Optional[Listing]
 
 
 class BuyeeMercariAdapter:
-    """經 Buyee 搜尋 Mercari（HTML）。"""
+    """
+    經 Buyee 搜尋 Mercari（HTML）。
+
+    2026-09-27 起正式環境停用（工作票 21）：Buyee 對 /mercari/* 啟用 AWS WAF 的 JavaScript 挑戰
+    （x-amzn-waf-action: challenge），程式請求一律拿到 HTTP 202 空頁，不繞過對方防爬機制。
+    保留本轉接器與測試；Buyee 解除挑戰後，在 build_platforms() 把 mercari 的轉接器改回本類別即可恢復。
+    """
 
     def __init__(self, http: Optional[HttpGet] = None):
         self._http = http or aiohttp_get
@@ -441,12 +447,11 @@ def build_platforms(evaluation_mode: Optional[bool] = None, http: Optional[HttpG
     """
     候選平台池的全部平台。每次比價實際查詢哪 6 個由類別對照表（services.categories）決定。
     evaluation_mode 未指定時依 EVALUATION_MODE 設定；只有評測模式會啟用付費的 RapidAPI 轉接器。
-    尚無轉接器的平台只提供搜尋連結。
+    沒有轉接器的平台（尚未實作或已停用）只提供搜尋連結。
     """
     evaluating = settings.evaluation_mode if evaluation_mode is None else evaluation_mode
-    mercari_adapter: PlatformAdapter = (
-        MercariRapidApiAdapter(settings.rapidapi_key, http=http) if evaluating else BuyeeMercariAdapter(http=http)
-    )
+    # 正式環境的 Mercari 只給搜尋連結：Buyee Mercari 被 AWS WAF 擋下（見 BuyeeMercariAdapter）
+    mercari_adapter = MercariRapidApiAdapter(settings.rapidapi_key, http=http) if evaluating else None
     shopee_adapter = (
         ShopeeRapidApiAdapter(settings.rapidapi_key_shopee, url=settings.shopee_api_url, http=http)
         if evaluating else None
@@ -454,6 +459,7 @@ def build_platforms(evaluation_mode: Optional[bool] = None, http: Optional[HttpG
     return {
         "mercari": Platform(
             "mercari", "ja", _mercari_link, mercari_adapter,
+            # 正式環境目前沒有轉接器，buyee_mercari_price 保留給恢復 BuyeeMercariAdapter 時使用
             blacklisted_median_price(get_active_blacklist) if evaluating else buyee_mercari_price,
         ),
         "yahoo_jp": Platform("yahoo_jp", "ja", _buyee_link(build_buyee_yahoo_search_url)),
